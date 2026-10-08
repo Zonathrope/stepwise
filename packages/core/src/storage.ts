@@ -18,7 +18,7 @@ export interface Storage {
   readonly createRun: (run: RunRecord) => Effect.Effect<void, StorageError>
   readonly updateRun: (
     id: string,
-    patch: Partial<Pick<RunRecord, "status" | "completedAt" | "error" | "retryAfter">>,
+    patch: Partial<Pick<RunRecord, "status" | "completedAt" | "error" | "retryAfter" | "waitingFor">>,
   ) => Effect.Effect<void, StorageError>
   /**
    * Atomically apply `patch` only if the run's current status is in `from`.
@@ -42,6 +42,18 @@ export interface Storage {
     functionName?: string
     status?: RunStatus
   }) => Effect.Effect<number, StorageError>
+
+  /** All runs currently parked in `waiting` on the given event name. */
+  readonly listWaitingRuns: (eventName: string) => Effect.Effect<RunRecord[], StorageError>
+  /**
+   * Atomically resume a `waiting` run: completes its wait step with `output` and moves the
+   * run to `pending`. Returns false (and changes nothing) if the run is no longer `waiting`.
+   */
+  readonly resumeWaitingRun: (
+    runId: string,
+    stepName: string,
+    output: unknown,
+  ) => Effect.Effect<boolean, StorageError>
 
   readonly createStep: (step: StepRecord) => Effect.Effect<void, StorageError>
   /**
@@ -94,6 +106,7 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
           completedAt: patch.completedAt !== undefined ? patch.completedAt : existing.completedAt,
           error: patch.error !== undefined ? patch.error : existing.error,
           retryAfter: patch.retryAfter !== undefined ? patch.retryAfter : existing.retryAfter,
+          waitingFor: patch.waitingFor !== undefined ? patch.waitingFor : existing.waitingFor,
         })
       }),
     transitionRun: (id, from, patch) =>
@@ -114,17 +127,54 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
           const now = new Date()
           all = all.filter(
             (r) =>
-              (r.status === "pending" || r.status === "retrying") &&
-              Option.match(r.retryAfter, {
-                onNone: () => true,
-                onSome: (retryAfter) => retryAfter <= now,
-              }),
+              r.status === "waiting"
+                ? // waiting runs are only picked up once their wait timeout has elapsed
+                  Option.match(r.retryAfter, {
+                    onNone: () => false,
+                    onSome: (retryAfter) => retryAfter <= now,
+                  })
+                : (r.status === "pending" || r.status === "retrying") &&
+                  Option.match(r.retryAfter, {
+                    onNone: () => true,
+                    onSome: (retryAfter) => retryAfter <= now,
+                  }),
           )
         }
         all.sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())
         const offset = opts?.offset ?? 0
         const limit = opts?.limit ?? 50
         return all.slice(offset, offset + limit)
+      }),
+
+    listWaitingRuns: (eventName) =>
+      wrap(() =>
+        Array.from(runs.values()).filter(
+          (r) =>
+            r.status === "waiting" &&
+            Option.isSome(r.waitingFor) &&
+            r.waitingFor.value.event === eventName,
+        ),
+      ),
+    resumeWaitingRun: (runId, stepName, output) =>
+      wrap(() => {
+        const run = runs.get(runId)
+        if (!run || run.status !== "waiting") return false
+        const step = Array.from(steps.values()).find((s) => s.runId === runId && s.name === stepName)
+        if (step) {
+          steps.set(step.id, {
+            ...step,
+            status: "completed",
+            completedAt: Option.some(new Date()),
+            output: Option.some(output),
+          })
+        }
+        runs.set(runId, {
+          ...run,
+          status: "pending",
+          retryAfter: Option.none(),
+          waitingFor: Option.none(),
+        })
+        return true
       }),
 
     countRuns: (opts) =>

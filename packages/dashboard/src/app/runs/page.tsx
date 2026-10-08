@@ -4,7 +4,7 @@ import { relativeTime, duration, absoluteTime } from "@/lib/utils"
 import { statusTextColor, statusDotColor } from "@/lib/status-styles"
 
 const PAGE_SIZE = 50
-const STATUSES = ["pending", "running", "retrying", "completed", "failed", "cancelled"] as const
+const STATUSES = ["pending", "running", "retrying", "waiting", "completed", "failed", "cancelled"] as const
 
 const SERVER_URL = process.env["SERVER_URL"] ?? process.env["NEXT_PUBLIC_SERVER_URL"] ?? "http://localhost:4000"
 

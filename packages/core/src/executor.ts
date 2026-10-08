@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { Effect, Option } from "effect"
-import type { EventPayload } from "./schema.js"
+import type { EventPayload, WaitingFor } from "./schema.js"
 import { Storage } from "./storage.js"
 import { Registry } from "./registry.js"
 import { makeStepContext } from "./step-context.js"
@@ -52,26 +52,72 @@ export const executeRun = (runId: string) =>
         yield* storage.updateRun(runId, {
           status: "retrying",
           retryAfter: Option.some(park.retryAfter!),
+          waitingFor: Option.none(),
+        })
+      } else if (park.reason === "wait") {
+        const waitingFor = park.waitingFor!
+        yield* storage.updateRun(runId, {
+          status: "waiting",
+          retryAfter: Option.fromNullable(waitingFor.timeoutAt),
+          waitingFor: Option.some(waitingFor),
         })
       } else {
         // step-completed: park back to pending for next pickup
         yield* storage.updateRun(runId, {
           status: "pending",
           retryAfter: Option.none(),
+          waitingFor: Option.none(),
         })
       }
     } else if (outcome._tag === "completed") {
       yield* storage.updateRun(runId, {
         status: "completed",
         completedAt: Option.some(new Date()),
+        waitingFor: Option.none(),
       })
     } else {
       yield* storage.updateRun(runId, {
         status: "failed",
         completedAt: Option.some(new Date()),
         error: Option.some(String(outcome.error)),
+        waitingFor: Option.none(),
       })
     }
+  })
+
+const getPath = (value: unknown, path: string): unknown => {
+  let current: unknown = value
+  for (const key of path.split(".")) {
+    if (typeof current !== "object" || current === null) return undefined
+    current = (current as Record<string, unknown>)[key]
+  }
+  return current
+}
+
+const deepEqual = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
+
+/** True if `event` satisfies a run's `waitingFor` filter. */
+export const eventMatchesWait = (event: EventPayload, waitingFor: WaitingFor): boolean =>
+  event.name === waitingFor.event &&
+  Object.entries(waitingFor.match ?? {}).every(([path, expected]) =>
+    deepEqual(getPath(event.data, path), expected),
+  )
+
+/**
+ * Resume every `waiting` run whose filter matches `event`. The event becomes the output of the
+ * run's waitForEvent step. Returns the ids of the runs that were resumed.
+ */
+export const resumeWaitingRuns = (event: EventPayload) =>
+  Effect.gen(function* () {
+    const storage = yield* Storage
+    const waiting = yield* storage.listWaitingRuns(event.name)
+    const resumed: string[] = []
+    for (const run of waiting) {
+      if (Option.isNone(run.waitingFor) || !eventMatchesWait(event, run.waitingFor.value)) continue
+      const ok = yield* storage.resumeWaitingRun(run.id, run.waitingFor.value.stepName, event)
+      if (ok) resumed.push(run.id)
+    }
+    return resumed
   })
 
 const toIssues = (err: unknown): ValidationIssue[] => {
@@ -121,10 +167,14 @@ export const dispatchEvent = (event: EventPayload) =>
       completedAt: Option.none<Date>(),
       error: Option.none<string>(),
       retryAfter: Option.none<Date>(),
+      waitingFor: Option.none<WaitingFor>(),
     }))
 
     // Event and all runs are persisted atomically
     yield* storage.saveEventWithRuns(event, runs)
+
+    // Wake any runs parked in step.waitForEvent that this event satisfies
+    yield* resumeWaitingRuns(event)
 
     return runs.map((r) => ({ runId: r.id, functionName: r.functionName }))
   })

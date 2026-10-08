@@ -11,7 +11,7 @@ export interface RunSummary {
   id: string
   functionName: string
   eventId: string
-  status: "pending" | "running" | "retrying" | "completed" | "failed" | "cancelled"
+  status: "pending" | "running" | "retrying" | "waiting" | "completed" | "failed" | "cancelled"
   startedAt: string
   completedAt: string | null
   retryAfter: string | null

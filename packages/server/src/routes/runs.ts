@@ -94,7 +94,7 @@ const cancelOne = (runId: string) =>
   Effect.gen(function* () {
     const storage = yield* Storage
     // Single atomic conditional UPDATE: avoids the check-then-update race with workers.
-    return yield* storage.transitionRun(runId, ["pending", "retrying"], { status: "cancelled" })
+    return yield* storage.transitionRun(runId, ["pending", "retrying", "waiting"], { status: "cancelled" })
   })
 
 const retryOne = (runId: string) =>
@@ -107,7 +107,7 @@ const retryOne = (runId: string) =>
     const steps = yield* storage.listSteps(runId)
     for (const step of steps) {
       if (step.status === "failed") {
-        yield* storage.updateStep(`${runId}:${step.name}`, {
+        yield* storage.updateStep(step.id, {
           status: "pending",
           attempt: 0,
           error: Option.none(),
@@ -256,6 +256,15 @@ const serializeRun = (run: RunRecord) => ({
   completedAt: Option.getOrNull(run.completedAt)?.toISOString() ?? null,
   retryAfter: Option.getOrNull(run.retryAfter)?.toISOString() ?? null,
   error: Option.getOrNull(run.error),
+  waitingFor: Option.match(run.waitingFor, {
+    onNone: () => null,
+    onSome: (w) => ({
+      event: w.event,
+      match: w.match ?? null,
+      timeoutAt: w.timeoutAt?.toISOString() ?? null,
+      onTimeout: w.onTimeout,
+    }),
+  }),
 })
 
 const serializeStep = (step: StepRecord) => ({

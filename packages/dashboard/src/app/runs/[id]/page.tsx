@@ -38,7 +38,7 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
   const run = await getRun(id).catch(() => null)
   if (!run) notFound()
 
-  const canCancel = run.status === "pending" || run.status === "retrying"
+  const canCancel = run.status === "pending" || run.status === "retrying" || run.status === "waiting"
   const canRetry = run.status === "failed"
   const totalDuration = run.completedAt ? duration(run.startedAt, run.completedAt) : null
 

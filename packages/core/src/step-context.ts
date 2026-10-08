@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { Context, Duration, Effect, Option } from "effect"
+import type { EventPayload, WaitingFor } from "./schema.js"
 import type { Storage } from "./storage.js"
 import { computeBackoffDelay, type BackoffOptions } from "./backoff.js"
 import { StepError, StorageError, StepperPark } from "./errors.js"
@@ -8,6 +9,21 @@ export interface StepOptions {
   maxAttempts?: number
   /** Delay strategy between retries. Defaults to immediate. */
   backoff?: BackoffOptions
+}
+
+export interface WaitForEventOptions {
+  /** Name of the event to wait for. */
+  event: string
+  /**
+   * Serialisable filter on the incoming event: dotted paths into `event.data` mapped to the
+   * values they must equal, e.g. `{ orderId: event.data.orderId }`. Omit to match any event
+   * with the given name. (Functions cannot be persisted across restarts, hence no predicate.)
+   */
+  match?: Record<string, unknown>
+  /** How long to wait. Omit to wait indefinitely. */
+  timeout?: Duration.DurationInput
+  /** On timeout: resolve the step with `null` (default) or fail the run with a StepError. */
+  onTimeout?: "null" | "throw"
 }
 
 export interface StepContext {
@@ -21,6 +37,11 @@ export interface StepContext {
     name: string,
     duration: Duration.Duration,
   ) => Effect.Effect<void, StepperPark | StorageError, never>
+  /** Park the run until a matching event arrives; resolves with that event (or null on timeout). */
+  readonly waitForEvent: (
+    name: string,
+    opts: WaitForEventOptions,
+  ) => Effect.Effect<EventPayload | null, StepperPark | StepError | StorageError, never>
 }
 
 export const StepContext = Context.GenericTag<StepContext>("@integration-stepper/core/StepContext")
@@ -153,6 +174,69 @@ export const makeStepContext = (runId: string, storage: Storage): StepContext =>
 
         const retryAfter = new Date(Date.now() + Duration.toMillis(duration))
         return yield* Effect.fail(new StepperPark({ reason: "sleep", retryAfter }))
+      }),
+
+    waitForEvent: (name: string, opts: WaitForEventOptions) =>
+      Effect.gen(function* () {
+        const indexedName = getIndexedName(name)
+        const stepKey = `${runId}:${indexedName}`
+        const onTimeout = opts.onTimeout ?? "null"
+
+        const existing = yield* storage.getStep(runId, indexedName)
+
+        // Already resolved (by a matching event or a memoised timeout)
+        if (Option.isSome(existing) && existing.value.status === "completed") {
+          return Option.getOrNull(existing.value.output) as EventPayload | null
+        }
+
+        const startedAt = Option.isSome(existing)
+          ? Option.getOrElse(existing.value.startedAt, () => new Date())
+          : new Date()
+        // Derived from the step's persisted start time so it is stable across replays/crashes
+        const timeoutAt =
+          opts.timeout === undefined ? null : new Date(startedAt.getTime() + Duration.toMillis(opts.timeout))
+
+        if (Option.isNone(existing)) {
+          yield* storage.createStep({
+            id: randomUUID(),
+            runId,
+            name: indexedName,
+            status: "running",
+            attempt: 1,
+            maxAttempts: 1,
+            startedAt: Option.some(startedAt),
+            completedAt: Option.none(),
+            output: Option.none(),
+            error: Option.none(),
+            retryAfter: Option.none(),
+          })
+        } else if (timeoutAt !== null && timeoutAt.getTime() <= Date.now()) {
+          // Replayed after the timeout elapsed without a matching event
+          if (onTimeout === "throw") {
+            const message = `Timed out waiting for event "${opts.event}"`
+            yield* storage.updateStep(existing.value.id, {
+              status: "failed",
+              completedAt: Option.some(new Date()),
+              error: Option.some(message),
+            })
+            return yield* Effect.fail(new StepError({ stepName: indexedName, cause: message, attempt: 1 }))
+          }
+          yield* storage.updateStep(existing.value.id, {
+            status: "completed",
+            completedAt: Option.some(new Date()),
+            output: Option.some(null),
+          })
+          return yield* Effect.fail(new StepperPark({ reason: "step-completed" }))
+        }
+
+        const waitingFor: WaitingFor = {
+          event: opts.event,
+          stepName: indexedName,
+          ...(opts.match !== undefined ? { match: opts.match } : {}),
+          timeoutAt,
+          onTimeout,
+        }
+        return yield* Effect.fail(new StepperPark({ reason: "wait", waitingFor }))
       }),
   }
 }
