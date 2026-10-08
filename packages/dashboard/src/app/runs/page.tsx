@@ -1,9 +1,29 @@
 import { getRuns, getRunCount } from "@/lib/api"
+import { revalidatePath } from "next/cache"
 import { relativeTime, duration, absoluteTime } from "@/lib/utils"
 import { statusTextColor, statusDotColor } from "@/lib/status-styles"
 
 const PAGE_SIZE = 50
 const STATUSES = ["pending", "running", "retrying", "completed", "failed", "cancelled"] as const
+
+const SERVER_URL = process.env["SERVER_URL"] ?? process.env["NEXT_PUBLIC_SERVER_URL"] ?? "http://localhost:4000"
+
+async function bulkAction(action: "bulk-cancel" | "bulk-retry", status: string, functionName: string) {
+  "use server"
+  const token = process.env["STEPPER_DASHBOARD_TOKEN"]
+  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  if (token) headers["Authorization"] = `Bearer ${token}`
+  const res = await fetch(`${SERVER_URL}/api/runs/${action}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ filter: { status, ...(functionName ? { functionName } : {}) } }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.error ?? "Bulk operation failed")
+  }
+  revalidatePath("/runs")
+}
 
 export default async function RunsPage({
   searchParams,
@@ -46,7 +66,29 @@ export default async function RunsPage({
             {total !== null && total > 0 && ` · page ${page} of ${Math.ceil(total / PAGE_SIZE)}`}
           </p>
         </div>
-        <StatusFilter current={params.status} />
+        <div className="flex items-center gap-3">
+          {(params.status === "pending" || params.status === "retrying") && runs.length > 0 && (
+            <form action={bulkAction.bind(null, "bulk-cancel", params.status, params.functionName ?? "")}>
+              <button
+                type="submit"
+                className="text-xs px-3 py-1.5 rounded-md border border-zinc-700 text-zinc-400 hover:border-red-800 hover:text-red-400 hover:bg-red-950/30 transition-colors"
+              >
+                Cancel all {params.status}
+              </button>
+            </form>
+          )}
+          {params.status === "failed" && runs.length > 0 && (
+            <form action={bulkAction.bind(null, "bulk-retry", "failed", params.functionName ?? "")}>
+              <button
+                type="submit"
+                className="text-xs px-3 py-1.5 rounded-md border border-zinc-700 text-zinc-400 hover:border-indigo-700 hover:text-indigo-300 hover:bg-indigo-950/30 transition-colors"
+              >
+                Retry all failed
+              </button>
+            </form>
+          )}
+          <StatusFilter current={params.status} />
+        </div>
       </div>
 
       <div className="border border-zinc-800 rounded-lg overflow-hidden">

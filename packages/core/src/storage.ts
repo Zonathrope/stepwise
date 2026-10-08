@@ -20,6 +20,15 @@ export interface Storage {
     id: string,
     patch: Partial<Pick<RunRecord, "status" | "completedAt" | "error" | "retryAfter">>,
   ) => Effect.Effect<void, StorageError>
+  /**
+   * Atomically apply `patch` only if the run's current status is in `from`.
+   * Returns true if a row was updated, false otherwise (not found or status mismatch).
+   */
+  readonly transitionRun: (
+    id: string,
+    from: ReadonlyArray<RunStatus>,
+    patch: Partial<Pick<RunRecord, "status" | "completedAt" | "error" | "retryAfter">>,
+  ) => Effect.Effect<boolean, StorageError>
   readonly getRun: (id: string) => Effect.Effect<Option.Option<RunRecord>, StorageError>
   readonly listRuns: (opts?: {
     functionName?: string
@@ -86,6 +95,13 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
           error: patch.error !== undefined ? patch.error : existing.error,
           retryAfter: patch.retryAfter !== undefined ? patch.retryAfter : existing.retryAfter,
         })
+      }),
+    transitionRun: (id, from, patch) =>
+      wrap(() => {
+        const existing = runs.get(id)
+        if (!existing || !from.includes(existing.status)) return false
+        runs.set(id, { ...existing, ...patch } as RunRecord)
+        return true
       }),
     getRun: (id) => wrap(() => Option.fromNullable(runs.get(id))),
     listRuns: (opts) =>

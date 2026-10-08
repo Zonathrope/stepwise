@@ -20,12 +20,26 @@ async function cancelRun(runId: string) {
   revalidatePath(`/runs/${runId}`)
 }
 
+async function retryRun(runId: string) {
+  "use server"
+  const token = process.env["STEPPER_DASHBOARD_TOKEN"]
+  const headers: Record<string, string> = {}
+  if (token) headers["Authorization"] = `Bearer ${token}`
+  const res = await fetch(`${SERVER_URL}/api/runs/${runId}/retry`, { method: "POST", headers })
+  if (!res.ok) {
+    const body = await res.json()
+    throw new Error(body.error ?? "Failed to retry run")
+  }
+  revalidatePath(`/runs/${runId}`)
+}
+
 export default async function RunDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const run = await getRun(id).catch(() => null)
   if (!run) notFound()
 
   const canCancel = run.status === "pending" || run.status === "retrying"
+  const canRetry = run.status === "failed"
   const totalDuration = run.completedAt ? duration(run.startedAt, run.completedAt) : null
 
   return (
@@ -56,6 +70,16 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
                 className="flex-shrink-0 text-xs px-3 py-1.5 rounded-md border border-zinc-700 text-zinc-400 hover:border-red-800 hover:text-red-400 hover:bg-red-950/30 transition-colors"
               >
                 Cancel
+              </button>
+            </form>
+          )}
+          {canRetry && (
+            <form action={retryRun.bind(null, run.id)}>
+              <button
+                type="submit"
+                className="flex-shrink-0 text-xs px-3 py-1.5 rounded-md border border-zinc-700 text-zinc-400 hover:border-indigo-700 hover:text-indigo-300 hover:bg-indigo-950/30 transition-colors"
+              >
+                Retry
               </button>
             </form>
           )}

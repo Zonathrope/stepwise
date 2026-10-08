@@ -116,6 +116,25 @@ export const PostgresStorageLive = (db: Db) =>
           catch: toStorageError,
         }),
 
+      transitionRun: (id, from, patch) =>
+        Effect.tryPromise({
+          try: async () => {
+            const set = {
+              ...(patch.status !== undefined && { status: patch.status }),
+              ...(patch.completedAt !== undefined && { completedAt: Option.getOrNull(patch.completedAt) }),
+              ...(patch.retryAfter !== undefined && { retryAfter: Option.getOrNull(patch.retryAfter) }),
+              ...(patch.error !== undefined && { error: Option.getOrNull(patch.error) }),
+            }
+            const rows = await db
+              .update(schema.runs)
+              .set(set)
+              .where(and(eq(schema.runs.id, id), inArray(schema.runs.status, [...from])))
+              .returning({ id: schema.runs.id })
+            return rows.length > 0
+          },
+          catch: toStorageError,
+        }),
+
       getRun: (id) =>
         Effect.tryPromise({
           try: async () => {
