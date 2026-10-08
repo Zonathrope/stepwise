@@ -61,6 +61,23 @@ export async function getRuns(opts?: {
   return res.json()
 }
 
+export async function getRunCount(opts?: {
+  functionName?: string
+  status?: string
+}): Promise<number> {
+  const params = new URLSearchParams()
+  if (opts?.functionName) params.set("functionName", opts.functionName)
+  if (opts?.status) params.set("status", opts.status)
+
+  const res = await fetch(`${SERVER_URL}/api/runs/count?${params}`, {
+    cache: "no-store",
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error(`Failed to count runs: ${res.status}`)
+  const body = (await res.json()) as { count: number }
+  return body.count
+}
+
 export async function getRun(id: string): Promise<RunDetail> {
   const res = await fetch(`${SERVER_URL}/api/runs/${id}`, {
     cache: "no-store",

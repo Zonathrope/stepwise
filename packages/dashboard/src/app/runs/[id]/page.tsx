@@ -2,6 +2,7 @@ import { getRun } from "@/lib/api"
 import { notFound } from "next/navigation"
 import { revalidatePath } from "next/cache"
 import { relativeTime, duration, absoluteTime } from "@/lib/utils"
+import { statusBadge, stepTextColor } from "@/lib/status-styles"
 import { Check, X, Pause, Loader, Minus, Circle, Clock } from "lucide-react"
 
 const SERVER_URL = process.env["SERVER_URL"] ?? process.env["NEXT_PUBLIC_SERVER_URL"] ?? "http://localhost:4000"
@@ -19,12 +20,26 @@ async function cancelRun(runId: string) {
   revalidatePath(`/runs/${runId}`)
 }
 
+async function retryRun(runId: string) {
+  "use server"
+  const token = process.env["STEPPER_DASHBOARD_TOKEN"]
+  const headers: Record<string, string> = {}
+  if (token) headers["Authorization"] = `Bearer ${token}`
+  const res = await fetch(`${SERVER_URL}/api/runs/${runId}/retry`, { method: "POST", headers })
+  if (!res.ok) {
+    const body = await res.json()
+    throw new Error(body.error ?? "Failed to retry run")
+  }
+  revalidatePath(`/runs/${runId}`)
+}
+
 export default async function RunDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const run = await getRun(id).catch(() => null)
   if (!run) notFound()
 
   const canCancel = run.status === "pending" || run.status === "retrying"
+  const canRetry = run.status === "failed"
   const totalDuration = run.completedAt ? duration(run.startedAt, run.completedAt) : null
 
   return (
@@ -55,6 +70,16 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
                 className="flex-shrink-0 text-xs px-3 py-1.5 rounded-md border border-zinc-700 text-zinc-400 hover:border-red-800 hover:text-red-400 hover:bg-red-950/30 transition-colors"
               >
                 Cancel
+              </button>
+            </form>
+          )}
+          {canRetry && (
+            <form action={retryRun.bind(null, run.id)}>
+              <button
+                type="submit"
+                className="flex-shrink-0 text-xs px-3 py-1.5 rounded-md border border-zinc-700 text-zinc-400 hover:border-indigo-700 hover:text-indigo-300 hover:bg-indigo-950/30 transition-colors"
+              >
+                Retry
               </button>
             </form>
           )}
@@ -166,16 +191,8 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const styles: Record<string, string> = {
-    completed: "text-emerald-400 bg-emerald-950/50 border-emerald-800/60",
-    running:   "text-blue-400 bg-blue-950/50 border-blue-800/60",
-    retrying:  "text-amber-400 bg-amber-950/50 border-amber-800/60",
-    failed:    "text-red-400 bg-red-950/50 border-red-800/60",
-    pending:   "text-zinc-300 bg-zinc-800/50 border-zinc-700",
-    cancelled: "text-zinc-500 bg-zinc-800/30 border-zinc-700",
-  }
   return (
-    <span className={`text-xs font-medium px-2.5 py-1 rounded-full border ${styles[status] ?? styles.cancelled}`}>
+    <span className={`text-xs font-medium px-2.5 py-1 rounded-full border ${statusBadge(status)}`}>
       {status}
     </span>
   )
@@ -201,16 +218,6 @@ function StepIcon({ status, isSleep }: { status: string; isSleep: boolean }) {
     case "failed":    return <X size={size} className="text-red-400" strokeWidth={2.5} />
     case "skipped":   return <Minus size={size} className="text-zinc-500" />
     default:          return <Circle size={size} className="text-zinc-500" />
-  }
-}
-
-function stepTextColor(status: string) {
-  switch (status) {
-    case "completed": return "text-emerald-400"
-    case "running":   return "text-blue-400"
-    case "failed":    return "text-red-400"
-    case "skipped":   return "text-zinc-500"
-    default:          return "text-zinc-400"
   }
 }
 

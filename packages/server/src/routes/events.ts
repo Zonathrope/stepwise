@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { Hono } from "hono"
-import { Effect, Layer, Option } from "effect"
-import { dispatchEvent, Registry, Storage } from "@integration-stepper/core"
+import { Cause, Effect, Layer, Option } from "effect"
+import { dispatchEvent, Registry, Storage, ValidationError } from "@integration-stepper/core"
 import { sql } from "drizzle-orm"
 import type { ServerEnv } from "../types.js"
 
@@ -54,6 +54,14 @@ eventsRouter.post("/", async (c) => {
   )
 
   if (result._tag === "Failure") {
+    const failure = Cause.failureOption(result.cause)
+    if (Option.isSome(failure) && failure.value instanceof ValidationError) {
+      const e = failure.value
+      return c.json(
+        { error: "Validation failed", function: e.functionName, message: e.message, issues: e.issues },
+        400,
+      )
+    }
     console.error("Failed to dispatch event", result.cause)
     return c.json({ error: "Failed to dispatch event" }, 500)
   }
