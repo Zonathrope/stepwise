@@ -4,11 +4,11 @@ import type { EventPayload, WaitingFor } from "./schema.js"
 import { Storage } from "./storage.js"
 import { Registry } from "./registry.js"
 import { makeStepContext } from "./step-context.js"
-import { RunNotFoundError, StepperPark } from "./errors.js"
+import { RunNotFoundError, StepperPark, ValidationError, type ValidationIssue } from "./errors.js"
 
 const isStepperPark = (e: unknown): e is StepperPark =>
   e instanceof StepperPark ||
-  (typeof e === "object" && e !== null && "_tag" in e && (e as any)._tag === "StepperPark")
+  (typeof e === "object" && e !== null && "_tag" in e && (e as { _tag: unknown })._tag === "StepperPark")
 
 export const executeRun = (runId: string) =>
   Effect.gen(function* () {
@@ -36,11 +36,11 @@ export const executeRun = (runId: string) =>
       | { _tag: "failed"; error: unknown }
 
     // Run the handler, distinguishing StepperPark (park signal) from real errors
-    const outcome: Outcome = yield* fn.handler(event as never, stepContext).pipe(
+    const outcome: Outcome = yield* fn.handler(event, stepContext).pipe(
       Effect.map((): Outcome => ({ _tag: "completed" })),
       Effect.catchAll((error): Effect.Effect<Outcome> => {
         if (isStepperPark(error)) {
-          return Effect.succeed({ _tag: "parked", park: error as StepperPark })
+          return Effect.succeed({ _tag: "parked", park: error })
         }
         return Effect.succeed({ _tag: "failed", error })
       }),
@@ -48,7 +48,7 @@ export const executeRun = (runId: string) =>
 
     if (outcome._tag === "parked") {
       const park = outcome.park
-      if (park.reason === "sleep") {
+      if (park.reason === "sleep" || park.reason === "step-retry") {
         yield* storage.updateRun(runId, {
           status: "retrying",
           retryAfter: Option.some(park.retryAfter!),
@@ -120,36 +120,61 @@ export const resumeWaitingRuns = (event: EventPayload) =>
     return resumed
   })
 
+const toIssues = (err: unknown): ValidationIssue[] => {
+  const raw = (err as any)?.issues ?? (err as any)?.errors
+  if (Array.isArray(raw) && raw.length > 0) {
+    return raw.map((i: any) => ({
+      ...(Array.isArray(i?.path)
+        ? { path: i.path.map((p: any) => (typeof p === "object" && p !== null && "key" in p ? p.key : p)) }
+        : {}),
+      message: String(i?.message ?? i),
+    }))
+  }
+  return [{ message: err instanceof Error ? err.message : String(err) }]
+}
+
 export const dispatchEvent = (event: EventPayload) =>
   Effect.gen(function* () {
     const storage = yield* Storage
     const registry = yield* Registry
 
-    yield* storage.saveEvent(event)
+    const fns = registry.getByEvent(event.name)
+
+    // Validate before persisting anything: no event or runs on invalid data
+    for (const fn of fns) {
+      if (!fn.schema) continue
+      try {
+        fn.schema.parse(event.data)
+      } catch (err) {
+        const issues = toIssues(err)
+        return yield* Effect.fail(
+          new ValidationError({
+            eventName: event.name,
+            functionName: fn.name,
+            message: `Event "${event.name}" failed validation for function "${fn.name}": ${issues.map((i) => i.message).join("; ")}`,
+            issues,
+          }),
+        )
+      }
+    }
+
+    const runs = fns.map((fn) => ({
+      id: randomUUID(),
+      functionName: fn.name,
+      eventId: event.id,
+      status: "pending" as const,
+      startedAt: new Date(),
+      completedAt: Option.none<Date>(),
+      error: Option.none<string>(),
+      retryAfter: Option.none<Date>(),
+      waitingFor: Option.none<WaitingFor>(),
+    }))
+
+    // Event and all runs are persisted atomically
+    yield* storage.saveEventWithRuns(event, runs)
 
     // Wake any runs parked in step.waitForEvent that this event satisfies
     yield* resumeWaitingRuns(event)
 
-    const fns = registry.getByEvent(event.name)
-
-    return yield* Effect.forEach(
-      fns,
-      (fn) =>
-        Effect.gen(function* () {
-          const runId = randomUUID()
-          yield* storage.createRun({
-            id: runId,
-            functionName: fn.name,
-            eventId: event.id,
-            status: "pending",
-            startedAt: new Date(),
-            completedAt: Option.none(),
-            error: Option.none(),
-            retryAfter: Option.none(),
-            waitingFor: Option.none(),
-          })
-          return { runId, functionName: fn.name }
-        }),
-      { concurrency: "unbounded" },
-    )
+    return runs.map((r) => ({ runId: r.id, functionName: r.functionName }))
   })

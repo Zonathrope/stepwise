@@ -25,6 +25,7 @@ export const StepRecord = Schema.Struct({
   completedAt: Schema.OptionFromNullOr(Schema.DateFromSelf),
   output: Schema.OptionFromNullOr(Schema.Unknown),
   error: Schema.OptionFromNullOr(Schema.String),
+  retryAfter: Schema.OptionFromNullOr(Schema.DateFromSelf),
 })
 export type StepRecord = typeof StepRecord.Type
 

@@ -10,11 +10,18 @@ export interface FunctionHandler<TData, TError, TRequirements> {
   ): Effect.Effect<void, TError | StepperPark, TRequirements>
 }
 
+/** Any object with a `.parse(data)` that throws on invalid input (Zod, ArkType, Valibot wrappers, ...). */
+export interface EventSchema<TData = unknown> {
+  parse(data: unknown): TData
+}
+
 export interface StepperFunction<TData = unknown, TError = never, TRequirements = never> {
   readonly name: string
   readonly event: string
   readonly handler: FunctionHandler<TData, TError, TRequirements>
   readonly concurrency?: number
+  /** Optional validator for `event.data`; checked in `dispatchEvent` before any run is created. */
+  readonly schema?: EventSchema<TData>
 }
 
 export const defineFunction = <TData = unknown, TError = never, TRequirements = never>(

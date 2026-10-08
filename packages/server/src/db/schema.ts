@@ -36,6 +36,7 @@ export const steps = pgTable("steps", {
   maxAttempts: integer("max_attempts").notNull().default(3),
   startedAt: timestamp("started_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),
-  output: jsonb("output"),
+  output: jsonb("output").$type<unknown>(),
   error: text("error"),
+  retryAfter: timestamp("retry_after", { withTimezone: true }),
 })

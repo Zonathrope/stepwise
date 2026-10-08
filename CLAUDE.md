@@ -76,7 +76,7 @@ Key files:
 
 **`StepperPark`** is a sentinel error (`_tag: "StepperPark"`) caught by `executeRun`. It is not a real failure — it signals either "step just completed, park the run" or "sleep, set retryAfter". `executeRun.catchAll` distinguishes it from real errors by tag.
 
-**`step.waitForEvent`**: parks the run as `"waiting"` with a persisted `waitingFor` filter (`match` = dotted `event.data` paths -> required values; serialisable, not a predicate). `dispatchEvent` resumes matching waiting runs via `storage.resumeWaitingRun` (atomic; the event becomes the step output). `timeout` is stored in `retryAfter`; a waiting run is pickup-eligible only once it elapses, then the step resolves `null` (or fails with `StepError` if `onTimeout: "throw"`). Migration `0001_wait_for_event.sql`. Tests: `pnpm --filter @integration-stepper/core test`.
+**`step.waitForEvent`**: parks the run as `"waiting"` with a persisted `waitingFor` filter (`match` = dotted `event.data` paths -> required values; serialisable, not a predicate). `dispatchEvent` resumes matching waiting runs via `storage.resumeWaitingRun` (atomic; the event becomes the step output). `timeout` is stored in `retryAfter`; a waiting run is pickup-eligible only once it elapses, then the step resolves `null` (or fails with `StepError` if `onTimeout: "throw"`). Migration `0002_wait_for_event.sql`. Tests: `pnpm --filter @integration-stepper/core test`.
 
 **Step retry**: `step.run(name, fn, { maxAttempts: 3 })` — on fn() failure, the step is marked `"failed"` (or left `"running"` if attempts remain), and either `StepperPark` re-queues the run or `StepError` terminally fails it.
 

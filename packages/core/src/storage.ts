@@ -6,11 +6,29 @@ export interface Storage {
   readonly saveEvent: (event: EventPayload) => Effect.Effect<void, StorageError>
   readonly getEvent: (id: string) => Effect.Effect<Option.Option<EventPayload>, StorageError>
 
+  /**
+   * Atomically persist an event together with all runs created for it.
+   * Either everything is stored or nothing is; a failure leaves no orphan event or partial runs.
+   */
+  readonly saveEventWithRuns: (
+    event: EventPayload,
+    runs: ReadonlyArray<RunRecord>,
+  ) => Effect.Effect<void, StorageError>
+
   readonly createRun: (run: RunRecord) => Effect.Effect<void, StorageError>
   readonly updateRun: (
     id: string,
     patch: Partial<Pick<RunRecord, "status" | "completedAt" | "error" | "retryAfter" | "waitingFor">>,
   ) => Effect.Effect<void, StorageError>
+  /**
+   * Atomically apply `patch` only if the run's current status is in `from`.
+   * Returns true if a row was updated, false otherwise (not found or status mismatch).
+   */
+  readonly transitionRun: (
+    id: string,
+    from: ReadonlyArray<RunStatus>,
+    patch: Partial<Pick<RunRecord, "status" | "completedAt" | "error" | "retryAfter">>,
+  ) => Effect.Effect<boolean, StorageError>
   readonly getRun: (id: string) => Effect.Effect<Option.Option<RunRecord>, StorageError>
   readonly listRuns: (opts?: {
     functionName?: string
@@ -20,6 +38,10 @@ export interface Storage {
     limit?: number
     offset?: number
   }) => Effect.Effect<RunRecord[], StorageError>
+  readonly countRuns: (opts?: {
+    functionName?: string
+    status?: RunStatus
+  }) => Effect.Effect<number, StorageError>
 
   /** All runs currently parked in `waiting` on the given event name. */
   readonly listWaitingRuns: (eventName: string) => Effect.Effect<RunRecord[], StorageError>
@@ -34,9 +56,13 @@ export interface Storage {
   ) => Effect.Effect<boolean, StorageError>
 
   readonly createStep: (step: StepRecord) => Effect.Effect<void, StorageError>
+  /**
+   * Update a step record, identified by its own step record ID (`StepRecord.id`).
+   * This is NOT the run ID and NOT the `runId:name` lookup key used by `getStep`.
+   */
   readonly updateStep: (
-    id: string,
-    patch: Partial<Pick<StepRecord, "status" | "attempt" | "startedAt" | "completedAt" | "output" | "error">>,
+    stepId: string,
+    patch: Partial<Pick<StepRecord, "status" | "attempt" | "startedAt" | "completedAt" | "output" | "error" | "retryAfter">>,
   ) => Effect.Effect<void, StorageError>
   readonly getStep: (runId: string, stepKey: string) => Effect.Effect<Option.Option<StepRecord>, StorageError>
   readonly listSteps: (runId: string) => Effect.Effect<StepRecord[], StorageError>
@@ -56,11 +82,39 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
     saveEvent: (event) => wrap(() => { events.set(event.id, event) }),
     getEvent: (id) => wrap(() => Option.fromNullable(events.get(id))),
 
+    saveEventWithRuns: (event, newRuns) =>
+      wrap(() => {
+        // Validate first so a failure cannot leave partial state behind.
+        for (const r of newRuns) {
+          if (runs.has(r.id)) throw new Error(`Run already exists: ${r.id}`)
+        }
+        events.set(event.id, event)
+        for (const r of newRuns) runs.set(r.id, r)
+      }),
+
     createRun: (run) => wrap(() => { runs.set(run.id, run) }),
     updateRun: (id, patch) =>
       wrap(() => {
         const existing = runs.get(id)
-        if (existing) runs.set(id, { ...existing, ...patch } as RunRecord)
+        if (!existing) return
+        runs.set(id, {
+          id: existing.id,
+          functionName: existing.functionName,
+          eventId: existing.eventId,
+          startedAt: existing.startedAt,
+          status: patch.status ?? existing.status,
+          completedAt: patch.completedAt !== undefined ? patch.completedAt : existing.completedAt,
+          error: patch.error !== undefined ? patch.error : existing.error,
+          retryAfter: patch.retryAfter !== undefined ? patch.retryAfter : existing.retryAfter,
+          waitingFor: patch.waitingFor !== undefined ? patch.waitingFor : existing.waitingFor,
+        })
+      }),
+    transitionRun: (id, from, patch) =>
+      wrap(() => {
+        const existing = runs.get(id)
+        if (!existing || !from.includes(existing.status)) return false
+        runs.set(id, { ...existing, ...patch } as RunRecord)
+        return true
       }),
     getRun: (id) => wrap(() => Option.fromNullable(runs.get(id))),
     listRuns: (opts) =>
@@ -105,10 +159,9 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
       wrap(() => {
         const run = runs.get(runId)
         if (!run || run.status !== "waiting") return false
-        const key = `${runId}:${stepName}`
-        const step = steps.get(key)
+        const step = Array.from(steps.values()).find((s) => s.runId === runId && s.name === stepName)
         if (step) {
-          steps.set(key, {
+          steps.set(step.id, {
             ...step,
             status: "completed",
             completedAt: Option.some(new Date()),
@@ -124,13 +177,39 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
         return true
       }),
 
-    createStep: (step) => wrap(() => { steps.set(`${step.runId}:${step.name}`, step) }),
-    updateStep: (id, patch) =>
+    countRuns: (opts) =>
+      wrap(() =>
+        Array.from(runs.values()).filter(
+          (r) =>
+            (!opts?.functionName || r.functionName === opts.functionName) &&
+            (!opts?.status || r.status === opts.status),
+        ).length,
+      ),
+
+    createStep: (step) => wrap(() => { steps.set(step.id, step) }),
+    updateStep: (stepId, patch) =>
       wrap(() => {
-        const existing = steps.get(id)
-        if (existing) steps.set(id, { ...existing, ...patch } as StepRecord)
+        const existing = steps.get(stepId)
+        if (!existing) return
+        steps.set(stepId, {
+          id: existing.id,
+          runId: existing.runId,
+          name: existing.name,
+          maxAttempts: existing.maxAttempts,
+          status: patch.status ?? existing.status,
+          attempt: patch.attempt ?? existing.attempt,
+          startedAt: patch.startedAt !== undefined ? patch.startedAt : existing.startedAt,
+          completedAt: patch.completedAt !== undefined ? patch.completedAt : existing.completedAt,
+          output: patch.output !== undefined ? patch.output : existing.output,
+          error: patch.error !== undefined ? patch.error : existing.error,
+          retryAfter: patch.retryAfter !== undefined ? patch.retryAfter : existing.retryAfter,
+        })
       }),
-    getStep: (runId, stepKey) => wrap(() => Option.fromNullable(steps.get(`${runId}:${stepKey}`))),
+    getStep: (runId, stepKey) => wrap(() =>
+        Option.fromNullable(
+          Array.from(steps.values()).find((s) => s.runId === runId && s.name === stepKey),
+        ),
+      ),
     listSteps: (runId) =>
       wrap(() => Array.from(steps.values()).filter((s) => s.runId === runId)),
   })
