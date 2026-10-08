@@ -12,6 +12,8 @@ import { integrationsRouter } from "./routes/integrations.js"
 import type { ServerEnv } from "./types.js"
 import { Worker, DEFAULT_CONCURRENCY } from "./worker.js"
 import type { Db } from "./db/client.js"
+import type { MiddlewareHandler } from "hono"
+import { collectMetrics, renderMetrics } from "./metrics.js"
 
 export interface SharedConfig<R> {
   functions: StepperFunction<any, any, R>[]
@@ -51,7 +53,7 @@ export const createApp = <R>(opts: AppOptions<R>): { app: Hono<ServerEnv>; shutd
   )
 
   // Auth middleware: protect /api/* if STEPPER_DASHBOARD_TOKEN is set
-  app.use("/api/*", async (c, next) => {
+  const requireToken: MiddlewareHandler<ServerEnv> = async (c, next) => {
     const token = process.env["STEPPER_DASHBOARD_TOKEN"]
     if (token) {
       const authHeader = c.req.header("Authorization")
@@ -60,7 +62,9 @@ export const createApp = <R>(opts: AppOptions<R>): { app: Hono<ServerEnv>; shutd
       }
     }
     await next()
-  })
+  }
+  app.use("/api/*", requireToken)
+  app.use("/metrics", requireToken)
 
   app.use("*", async (c, next) => {
     c.set("storageLayer", opts.storageLayer)
@@ -99,6 +103,16 @@ export const createApp = <R>(opts: AppOptions<R>): { app: Hono<ServerEnv>; shutd
   app.route("/api/events", eventsRouter)
   app.route("/api/runs", runsRouter)
   app.route("/api/integrations", integrationsRouter)
+
+  app.get("/metrics", async (c) => {
+    try {
+      const body = renderMetrics(await collectMetrics(c.get("db")))
+      return c.text(body, 200, { "Content-Type": "text/plain; version=0.0.4; charset=utf-8" })
+    } catch (err) {
+      console.error("[metrics] collection failed:", err)
+      return c.text("metrics unavailable\n", 500)
+    }
+  })
 
   app.get("/health", (c) => c.json({ ok: true }))
 
