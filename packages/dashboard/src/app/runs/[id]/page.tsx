@@ -2,6 +2,7 @@ import { getRun } from "@/lib/api"
 import { notFound } from "next/navigation"
 import { revalidatePath } from "next/cache"
 import { relativeTime, duration, absoluteTime } from "@/lib/utils"
+import { statusBadge, stepTextColor } from "@/lib/status-styles"
 import { Check, X, Pause, Loader, Minus, Circle, Clock } from "lucide-react"
 
 const SERVER_URL = process.env["SERVER_URL"] ?? process.env["NEXT_PUBLIC_SERVER_URL"] ?? "http://localhost:4000"
@@ -166,16 +167,8 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const styles: Record<string, string> = {
-    completed: "text-emerald-400 bg-emerald-950/50 border-emerald-800/60",
-    running:   "text-blue-400 bg-blue-950/50 border-blue-800/60",
-    retrying:  "text-amber-400 bg-amber-950/50 border-amber-800/60",
-    failed:    "text-red-400 bg-red-950/50 border-red-800/60",
-    pending:   "text-zinc-300 bg-zinc-800/50 border-zinc-700",
-    cancelled: "text-zinc-500 bg-zinc-800/30 border-zinc-700",
-  }
   return (
-    <span className={`text-xs font-medium px-2.5 py-1 rounded-full border ${styles[status] ?? styles.cancelled}`}>
+    <span className={`text-xs font-medium px-2.5 py-1 rounded-full border ${statusBadge(status)}`}>
       {status}
     </span>
   )
@@ -201,16 +194,6 @@ function StepIcon({ status, isSleep }: { status: string; isSleep: boolean }) {
     case "failed":    return <X size={size} className="text-red-400" strokeWidth={2.5} />
     case "skipped":   return <Minus size={size} className="text-zinc-500" />
     default:          return <Circle size={size} className="text-zinc-500" />
-  }
-}
-
-function stepTextColor(status: string) {
-  switch (status) {
-    case "completed": return "text-emerald-400"
-    case "running":   return "text-blue-400"
-    case "failed":    return "text-red-400"
-    case "skipped":   return "text-zinc-500"
-    default:          return "text-zinc-400"
   }
 }
 
