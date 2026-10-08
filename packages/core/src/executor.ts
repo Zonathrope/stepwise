@@ -8,7 +8,7 @@ import { RunNotFoundError, StepperPark } from "./errors.js"
 
 const isStepperPark = (e: unknown): e is StepperPark =>
   e instanceof StepperPark ||
-  (typeof e === "object" && e !== null && "_tag" in e && (e as any)._tag === "StepperPark")
+  (typeof e === "object" && e !== null && "_tag" in e && (e as { _tag: unknown })._tag === "StepperPark")
 
 export const executeRun = (runId: string) =>
   Effect.gen(function* () {
@@ -36,11 +36,11 @@ export const executeRun = (runId: string) =>
       | { _tag: "failed"; error: unknown }
 
     // Run the handler, distinguishing StepperPark (park signal) from real errors
-    const outcome: Outcome = yield* fn.handler(event as never, stepContext).pipe(
+    const outcome: Outcome = yield* fn.handler(event, stepContext).pipe(
       Effect.map((): Outcome => ({ _tag: "completed" })),
       Effect.catchAll((error): Effect.Effect<Outcome> => {
         if (isStepperPark(error)) {
-          return Effect.succeed({ _tag: "parked", park: error as StepperPark })
+          return Effect.succeed({ _tag: "parked", park: error })
         }
         return Effect.succeed({ _tag: "failed", error })
       }),

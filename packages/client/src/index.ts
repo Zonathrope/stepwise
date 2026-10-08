@@ -15,6 +15,15 @@ export interface StepperClient<EventMap extends Record<string, unknown>> {
   send<E extends keyof EventMap>(event: E, data: EventMap[E]): Promise<SendEventResult>
 }
 
+function parseSendEventResult(value: unknown): SendEventResult {
+  if (typeof value !== "object" || value === null) throw new Error("Invalid server response")
+  if (!("id" in value)) throw new Error("Invalid server response")
+  if (typeof value.id !== "string") throw new Error("Invalid server response")
+  if (!("runs" in value)) throw new Error("Invalid server response")
+  if (!Array.isArray(value.runs)) throw new Error("Invalid server response")
+  return { id: value.id, runs: value.runs }
+}
+
 export function createClient<
   const Fns extends readonly StepperFunction<any, any, any>[],
 >(
@@ -36,7 +45,7 @@ export function createClient<
         throw new Error(`Failed to send event "${String(event)}": ${res.status} ${body}`)
       }
 
-      return res.json() as Promise<SendEventResult>
+      return parseSendEventResult(await res.json())
     },
   }
 }

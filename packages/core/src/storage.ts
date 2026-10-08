@@ -48,7 +48,17 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
     updateRun: (id, patch) =>
       wrap(() => {
         const existing = runs.get(id)
-        if (existing) runs.set(id, { ...existing, ...patch } as RunRecord)
+        if (!existing) return
+        runs.set(id, {
+          id: existing.id,
+          functionName: existing.functionName,
+          eventId: existing.eventId,
+          startedAt: existing.startedAt,
+          status: patch.status ?? existing.status,
+          completedAt: patch.completedAt !== undefined ? patch.completedAt : existing.completedAt,
+          error: patch.error !== undefined ? patch.error : existing.error,
+          retryAfter: patch.retryAfter !== undefined ? patch.retryAfter : existing.retryAfter,
+        })
       }),
     getRun: (id) => wrap(() => Option.fromNullable(runs.get(id))),
     listRuns: (opts) =>
@@ -78,7 +88,19 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
     updateStep: (id, patch) =>
       wrap(() => {
         const existing = steps.get(id)
-        if (existing) steps.set(id, { ...existing, ...patch } as StepRecord)
+        if (!existing) return
+        steps.set(id, {
+          id: existing.id,
+          runId: existing.runId,
+          name: existing.name,
+          maxAttempts: existing.maxAttempts,
+          status: patch.status ?? existing.status,
+          attempt: patch.attempt ?? existing.attempt,
+          startedAt: patch.startedAt !== undefined ? patch.startedAt : existing.startedAt,
+          completedAt: patch.completedAt !== undefined ? patch.completedAt : existing.completedAt,
+          output: patch.output !== undefined ? patch.output : existing.output,
+          error: patch.error !== undefined ? patch.error : existing.error,
+        })
       }),
     getStep: (runId, stepKey) => wrap(() => Option.fromNullable(steps.get(`${runId}:${stepKey}`))),
     listSteps: (runId) =>
