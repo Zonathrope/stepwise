@@ -4,7 +4,7 @@ import type { EventPayload } from "./schema.js"
 import { Storage } from "./storage.js"
 import { Registry } from "./registry.js"
 import { makeStepContext } from "./step-context.js"
-import { RunNotFoundError, StepperPark } from "./errors.js"
+import { RunNotFoundError, StepperPark, ValidationError, type ValidationIssue } from "./errors.js"
 
 const isStepperPark = (e: unknown): e is StepperPark =>
   e instanceof StepperPark ||
@@ -74,14 +74,45 @@ export const executeRun = (runId: string) =>
     }
   })
 
+const toIssues = (err: unknown): ValidationIssue[] => {
+  const raw = (err as any)?.issues ?? (err as any)?.errors
+  if (Array.isArray(raw) && raw.length > 0) {
+    return raw.map((i: any) => ({
+      ...(Array.isArray(i?.path)
+        ? { path: i.path.map((p: any) => (typeof p === "object" && p !== null && "key" in p ? p.key : p)) }
+        : {}),
+      message: String(i?.message ?? i),
+    }))
+  }
+  return [{ message: err instanceof Error ? err.message : String(err) }]
+}
+
 export const dispatchEvent = (event: EventPayload) =>
   Effect.gen(function* () {
     const storage = yield* Storage
     const registry = yield* Registry
 
-    yield* storage.saveEvent(event)
-
     const fns = registry.getByEvent(event.name)
+
+    // Validate before persisting anything: no event or runs on invalid data
+    for (const fn of fns) {
+      if (!fn.schema) continue
+      try {
+        fn.schema.parse(event.data)
+      } catch (err) {
+        const issues = toIssues(err)
+        return yield* Effect.fail(
+          new ValidationError({
+            eventName: event.name,
+            functionName: fn.name,
+            message: `Event "${event.name}" failed validation for function "${fn.name}": ${issues.map((i) => i.message).join("; ")}`,
+            issues,
+          }),
+        )
+      }
+    }
+
+    yield* storage.saveEvent(event)
 
     return yield* Effect.forEach(
       fns,

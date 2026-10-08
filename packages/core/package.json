@@ -18,6 +18,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch",
+    "test": "tsc -p tsconfig.json && node --test dist/validation.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist *.tsbuildinfo"
   },

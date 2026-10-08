@@ -27,3 +27,15 @@ export class StepperPark extends Data.TaggedError("StepperPark")<{
   reason: "step-completed" | "sleep"
   retryAfter?: Date
 }> {}
+
+export interface ValidationIssue {
+  path?: ReadonlyArray<string | number>
+  message: string
+}
+
+export class ValidationError extends Data.TaggedError("ValidationError")<{
+  eventName: string
+  functionName: string
+  message: string
+  issues: ReadonlyArray<ValidationIssue>
+}> {}
