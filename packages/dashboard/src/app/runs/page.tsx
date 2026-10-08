@@ -1,20 +1,35 @@
-import { getRuns } from "@/lib/api"
+import { getRuns, getRunCount } from "@/lib/api"
 import { relativeTime, duration, absoluteTime } from "@/lib/utils"
 import { statusTextColor, statusDotColor } from "@/lib/status-styles"
 
+const PAGE_SIZE = 50
 const STATUSES = ["pending", "running", "retrying", "completed", "failed", "cancelled"] as const
 
 export default async function RunsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ status?: string; functionName?: string }>
+  searchParams: Promise<{ status?: string; functionName?: string; page?: string }>
 }) {
   const params = await searchParams
-  const runs = await getRuns({
+  const parsedPage = Number.parseInt(params.page ?? "1", 10)
+  const page = Number.isFinite(parsedPage) && parsedPage >= 1 ? parsedPage : 1
+  const filter = {
     ...(params.status !== undefined ? { status: params.status } : {}),
     ...(params.functionName !== undefined ? { functionName: params.functionName } : {}),
-    limit: 100,
-  }).catch(() => [])
+  }
+  const [runs, total] = await Promise.all([
+    getRuns({ ...filter, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }).catch(() => []),
+    getRunCount(filter).catch(() => null),
+  ])
+  const hasNext = total !== null ? page * PAGE_SIZE < total : runs.length === PAGE_SIZE
+  const pageHref = (p: number) => {
+    const q = new URLSearchParams()
+    if (params.status) q.set("status", params.status)
+    if (params.functionName) q.set("functionName", params.functionName)
+    if (p > 1) q.set("page", String(p))
+    const qs = q.toString()
+    return qs ? `/runs?${qs}` : "/runs"
+  }
 
   return (
     <div className="space-y-6">
@@ -27,7 +42,8 @@ export default async function RunsPage({
               : params.functionName
                 ? `Filtered by: ${params.functionName}`
                 : "All runs"}
-            {" "}· {runs.length} result{runs.length !== 1 ? "s" : ""}
+            {" "}· {total ?? runs.length} total
+            {total !== null && total > 0 && ` · page ${page} of ${Math.ceil(total / PAGE_SIZE)}`}
           </p>
         </div>
         <StatusFilter current={params.status} />
@@ -81,6 +97,17 @@ export default async function RunsPage({
           <div className="py-16 text-center text-zinc-500 text-sm">No runs found.</div>
         )}
       </div>
+
+      {(page > 1 || hasNext) && (
+        <div className="flex items-center justify-between text-xs">
+          {page > 1 ? (
+            <a href={pageHref(page - 1)} className="text-indigo-400 hover:text-indigo-300">← Previous</a>
+          ) : <span />}
+          {hasNext && (
+            <a href={pageHref(page + 1)} className="text-indigo-400 hover:text-indigo-300">Next →</a>
+          )}
+        </div>
+      )}
     </div>
   )
 }
