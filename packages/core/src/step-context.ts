@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto"
 import { Context, Duration, Effect, Option } from "effect"
 import type { Storage } from "./storage.js"
+import { computeBackoffDelay, type BackoffOptions } from "./backoff.js"
 import { StepError, StorageError, StepperPark } from "./errors.js"
 
 export interface StepOptions {
   maxAttempts?: number
+  /** Delay strategy between retries. Defaults to immediate. */
+  backoff?: BackoffOptions
 }
 
 export interface StepContext {
@@ -63,12 +66,14 @@ export const makeStepContext = (runId: string, storage: Storage): StepContext =>
             completedAt: Option.none(),
             output: Option.none(),
             error: Option.none(),
+            retryAfter: Option.none(),
           })
         } else {
           yield* storage.updateStep(stepKey, {
             status: "running",
             attempt,
             startedAt: Option.some(new Date()),
+            retryAfter: Option.none(),
           })
         }
 
@@ -80,16 +85,24 @@ export const makeStepContext = (runId: string, storage: Storage): StepContext =>
 
         if (fnResult._tag === "Left") {
           const stepError = fnResult.left
+          const terminal = attempt >= maxAttempts
+          const delayMs = terminal ? 0 : computeBackoffDelay(opts?.backoff, attempt)
+          const retryAfter = delayMs > 0 ? new Date(Date.now() + delayMs) : undefined
           yield* storage.updateStep(stepKey, {
-            status: attempt >= maxAttempts ? "failed" : "running",
+            status: terminal ? "failed" : "running",
             error: Option.some(String(stepError.cause)),
+            retryAfter: Option.fromNullable(retryAfter),
           })
           // Terminal failure — all attempts exhausted
-          if (attempt >= maxAttempts) {
+          if (terminal) {
             return yield* Effect.fail(stepError)
           }
-          // Attempts remain — re-queue run for retry
-          return yield* Effect.fail(new StepperPark({ reason: "step-completed" }))
+          // Attempts remain — re-queue run, delayed if a backoff applies
+          return yield* Effect.fail(
+            retryAfter
+              ? new StepperPark({ reason: "step-retry", retryAfter })
+              : new StepperPark({ reason: "step-completed" }),
+          )
         }
 
         // Success — store result and abort handler to defer remaining steps
@@ -127,6 +140,7 @@ export const makeStepContext = (runId: string, storage: Storage): StepContext =>
             completedAt: Option.some(new Date()),
             output: Option.none(),
             error: Option.none(),
+            retryAfter: Option.none(),
           })
         } else {
           yield* storage.updateStep(stepKey, {

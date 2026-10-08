@@ -48,7 +48,7 @@ export const executeRun = (runId: string) =>
 
     if (outcome._tag === "parked") {
       const park = outcome.park
-      if (park.reason === "sleep") {
+      if (park.reason === "sleep" || park.reason === "step-retry") {
         yield* storage.updateRun(runId, {
           status: "retrying",
           retryAfter: Option.some(park.retryAfter!),

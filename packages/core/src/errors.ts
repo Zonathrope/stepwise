@@ -24,6 +24,6 @@ export class MaxAttemptsExceededError extends Data.TaggedError("MaxAttemptsExcee
 }> {}
 
 export class StepperPark extends Data.TaggedError("StepperPark")<{
-  reason: "step-completed" | "sleep"
+  reason: "step-completed" | "sleep" | "step-retry"
   retryAfter?: Date
 }> {}

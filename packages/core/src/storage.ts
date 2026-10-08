@@ -24,7 +24,7 @@ export interface Storage {
   readonly createStep: (step: StepRecord) => Effect.Effect<void, StorageError>
   readonly updateStep: (
     id: string,
-    patch: Partial<Pick<StepRecord, "status" | "attempt" | "startedAt" | "completedAt" | "output" | "error">>,
+    patch: Partial<Pick<StepRecord, "status" | "attempt" | "startedAt" | "completedAt" | "output" | "error" | "retryAfter">>,
   ) => Effect.Effect<void, StorageError>
   readonly getStep: (runId: string, stepKey: string) => Effect.Effect<Option.Option<StepRecord>, StorageError>
   readonly listSteps: (runId: string) => Effect.Effect<StepRecord[], StorageError>

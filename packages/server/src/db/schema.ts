@@ -37,4 +37,5 @@ export const steps = pgTable("steps", {
   completedAt: timestamp("completed_at", { withTimezone: true }),
   output: jsonb("output"),
   error: text("error"),
+  retryAfter: timestamp("retry_after", { withTimezone: true }),
 })

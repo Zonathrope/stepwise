@@ -19,13 +19,15 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
     "effect": "^3.11.9"
   },
   "devDependencies": {
+    "@types/node": "^22.10.1",
     "typescript": "^5.7.2",
-    "@types/node": "^22.10.1"
+    "vitest": "^2.1.8"
   }
 }

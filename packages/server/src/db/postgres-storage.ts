@@ -35,6 +35,7 @@ const toStepRecord = (row: typeof schema.steps.$inferSelect): StepRecord => ({
   completedAt: Option.fromNullable(row.completedAt),
   output: Option.fromNullable(row.output),
   error: Option.fromNullable(row.error),
+  retryAfter: Option.fromNullable(row.retryAfter),
 })
 
 export const PostgresStorageLive = (db: Db) =>
@@ -153,6 +154,7 @@ export const PostgresStorageLive = (db: Db) =>
               completedAt: Option.getOrNull(step.completedAt),
               output: Option.getOrNull(step.output) as Record<string, unknown> | null,
               error: Option.getOrNull(step.error),
+              retryAfter: Option.getOrNull(step.retryAfter),
             }),
           catch: toStorageError,
         }),
@@ -165,6 +167,8 @@ export const PostgresStorageLive = (db: Db) =>
             return db.update(schema.steps).set({
               ...(patch.status !== undefined && { status: patch.status }),
               ...(patch.attempt !== undefined && { attempt: patch.attempt }),
+              ...(patch.startedAt !== undefined && { startedAt: Option.getOrNull(patch.startedAt) }),
+              ...(patch.retryAfter !== undefined && { retryAfter: Option.getOrNull(patch.retryAfter) }),
               ...(patch.completedAt !== undefined && { completedAt: Option.getOrNull(patch.completedAt) }),
               ...(patch.output !== undefined && { output: Option.getOrNull(patch.output) as Record<string, unknown> | null }),
               ...(patch.error !== undefined && { error: Option.getOrNull(patch.error) }),
