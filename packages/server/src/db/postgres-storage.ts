@@ -1,5 +1,5 @@
 import { Effect, Layer, Option } from "effect"
-import { eq, and, inArray, isNull, lte, or, sql, desc } from "drizzle-orm"
+import { eq, and, inArray, isNull, lte, or, sql, desc, count } from "drizzle-orm"
 import { Storage, StorageError, type EventPayload, type RunRecord, type StepRecord, type RunStatus } from "@integration-stepper/core"
 import type { Db } from "./client.js"
 import * as schema from "./schema.js"
@@ -135,6 +135,25 @@ export const PostgresStorageLive = (db: Db) =>
               .offset(opts?.offset ?? 0)
 
             return rows.map(toRunRecord)
+          },
+          catch: toStorageError,
+        }),
+
+      countRuns: (opts) =>
+        Effect.tryPromise({
+          try: async () => {
+            const conditions = []
+            if (opts?.functionName) {
+              conditions.push(eq(schema.runs.integrationName, opts.functionName))
+            }
+            if (opts?.status) {
+              conditions.push(eq(schema.runs.status, opts.status))
+            }
+            const baseQuery = db.select({ value: count() }).from(schema.runs)
+            const rows = await (conditions.length > 0
+              ? baseQuery.where(and(...conditions))
+              : baseQuery)
+            return rows[0]?.value ?? 0
           },
           catch: toStorageError,
         }),

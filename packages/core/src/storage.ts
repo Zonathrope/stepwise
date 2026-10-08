@@ -20,6 +20,10 @@ export interface Storage {
     limit?: number
     offset?: number
   }) => Effect.Effect<RunRecord[], StorageError>
+  readonly countRuns: (opts?: {
+    functionName?: string
+    status?: RunStatus
+  }) => Effect.Effect<number, StorageError>
 
   readonly createStep: (step: StepRecord) => Effect.Effect<void, StorageError>
   readonly updateStep: (
@@ -83,6 +87,15 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
         const limit = opts?.limit ?? 50
         return all.slice(offset, offset + limit)
       }),
+
+    countRuns: (opts) =>
+      wrap(() =>
+        Array.from(runs.values()).filter(
+          (r) =>
+            (!opts?.functionName || r.functionName === opts.functionName) &&
+            (!opts?.status || r.status === opts.status),
+        ).length,
+      ),
 
     createStep: (step) => wrap(() => { steps.set(`${step.runId}:${step.name}`, step) }),
     updateStep: (id, patch) =>

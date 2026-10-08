@@ -36,6 +36,29 @@ runsRouter.get("/", async (c) => {
   return c.json(result.value.map(serializeRun))
 })
 
+runsRouter.get("/count", async (c) => {
+  const functionName = c.req.query("functionName") ?? c.req.query("integrationName")
+  const status = c.req.query("status") as RunStatus | undefined
+
+  const program = Effect.gen(function* () {
+    const storage = yield* Storage
+    return yield* storage.countRuns({
+      ...(functionName !== undefined ? { functionName } : {}),
+      ...(status !== undefined ? { status } : {}),
+    })
+  })
+
+  const result = await Effect.runPromiseExit(
+    program.pipe(Effect.provide(c.get("storageLayer"))),
+  )
+
+  if (result._tag === "Failure") {
+    return c.json({ error: "Failed to count runs" }, 500)
+  }
+
+  return c.json({ count: result.value })
+})
+
 runsRouter.get("/:id", async (c) => {
   const runId = c.req.param("id")
 
