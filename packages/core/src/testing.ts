@@ -53,14 +53,15 @@ export const createTestRunner = <TData, TError, R>(
       return { run: currentRun, steps } satisfies TestRunResult
     })
 
-    const registryLayer = RegistryLive([fn as StepperFunction<any, any, any>])
+    // Bake fn's R requirements into the handler so the registry sees StepperFunction<_, _, never>.
+    // This lets Effect.provide(program, baseLayer) resolve to Effect<_, _, never> without any leakage.
+    const wrapped: StepperFunction<TData, TError, never> = {
+      ...fn,
+      handler: (event, step) => fn.handler(event, step).pipe(Effect.provide(layer)),
+    }
+    const registryLayer = RegistryLive([wrapped])
     const baseLayer = Layer.merge(InMemoryStorageLive, registryLayer)
-    const fullLayer = Layer.merge(baseLayer, layer as Layer.Layer<never>)
 
-    const runnable = program.pipe(
-      Effect.provide(fullLayer),
-    ) as unknown as Effect.Effect<TestRunResult, never, never>
-
-    return Effect.runPromise(runnable)
+    return Effect.runPromise(program.pipe(Effect.provide(baseLayer)))
   },
 })

@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { logger } from "hono/logger"
 import { streamSSE } from "hono/streaming"
-import type { Layer } from "effect"
+import { Effect, type Layer } from "effect"
 import type { Storage, Registry, StepperFunction } from "@integration-stepper/core"
 import { RegistryLive } from "@integration-stepper/core"
 import { SseBroadcaster } from "./sse.js"
@@ -29,7 +29,15 @@ export interface AppOptions<R> extends SharedConfig<R> {
 
 export const createApp = <R>(opts: AppOptions<R>): { app: Hono<ServerEnv>; shutdown: () => Promise<void> } => {
   const sse = new SseBroadcaster()
-  const registryLayer = RegistryLive(opts.functions)
+  // Bake each function's R requirements into its handler so the registry stores
+  // StepperFunction<_, _, never>. This ensures the worker's executeRun never has
+  // unsatisfied R requirements at runtime.
+  const wrappedFunctions: StepperFunction<any, any, never>[] = opts.functions.map((fn) => ({
+    ...fn,
+    handler: (...args: Parameters<typeof fn.handler>) =>
+      fn.handler(...args).pipe(Effect.provide(opts.layer)),
+  }))
+  const registryLayer = RegistryLive(wrappedFunctions)
 
   const app = new Hono<ServerEnv>()
 

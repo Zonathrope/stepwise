@@ -1,14 +1,17 @@
 import { Hono } from "hono"
-import { Effect, Layer, Option } from "effect"
-import { Storage } from "@integration-stepper/core"
-import type { RunRecord, RunStatus, StepRecord } from "@integration-stepper/core"
+import { Effect, Layer, Option, Schema } from "effect"
+import { Storage, RunStatus } from "@integration-stepper/core"
+import type { RunRecord, StepRecord } from "@integration-stepper/core"
 import type { ServerEnv } from "../types.js"
 
 export const runsRouter = new Hono<ServerEnv>()
 
 runsRouter.get("/", async (c) => {
   const functionName = c.req.query("functionName") ?? c.req.query("integrationName")
-  const status = c.req.query("status") as RunStatus | undefined
+  const rawStatus = c.req.query("status")
+  const status = rawStatus !== undefined
+    ? Option.getOrUndefined(Schema.decodeUnknownOption(RunStatus)(rawStatus))
+    : undefined
   const limit = Number(c.req.query("limit") ?? 50)
   const offset = Number(c.req.query("offset") ?? 0)
 

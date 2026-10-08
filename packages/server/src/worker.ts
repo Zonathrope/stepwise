@@ -82,7 +82,7 @@ export class Worker {
         sql`SELECT pg_try_advisory_lock(${ADVISORY_LOCK_ID}) AS acquired`
       )
 
-      const acquired = (lockResult as unknown as Array<{ acquired: boolean }>)[0]?.acquired
+      const acquired = lockResult[0]?.acquired
 
       if (acquired) {
         try {
@@ -198,9 +198,9 @@ export class Worker {
             FOR UPDATE SKIP LOCKED
             LIMIT ${globalSlots * 2}
           `
-        ) as unknown as Array<{ id: string; integration_name: string }>
+        )
 
-        const eligible: typeof rows = []
+        const eligible: { id: string; integration_name: string }[] = []
         const tempPerFunc = new Map(this.inFlightPerFunction)
 
         for (const row of rows) {
@@ -240,7 +240,7 @@ export class Worker {
       const result = await Effect.runPromiseExit(
         executeRun(runId).pipe(
           Effect.provide(Layer.mergeAll(this.storageLayer, this.registryLayer)),
-        ) as Effect.Effect<void, any, never>,
+        ),
       )
 
       if (result._tag === "Failure") {
