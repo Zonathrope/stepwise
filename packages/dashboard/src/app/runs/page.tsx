@@ -1,7 +1,9 @@
-import { getRuns } from "@/lib/api"
+import { getRuns, getRunCount } from "@/lib/api"
 import { revalidatePath } from "next/cache"
 import { relativeTime, duration, absoluteTime } from "@/lib/utils"
+import { statusTextColor, statusDotColor } from "@/lib/status-styles"
 
+const PAGE_SIZE = 50
 const STATUSES = ["pending", "running", "retrying", "completed", "failed", "cancelled"] as const
 
 const SERVER_URL = process.env["SERVER_URL"] ?? process.env["NEXT_PUBLIC_SERVER_URL"] ?? "http://localhost:4000"
@@ -26,14 +28,28 @@ async function bulkAction(action: "bulk-cancel" | "bulk-retry", status: string, 
 export default async function RunsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ status?: string; functionName?: string }>
+  searchParams: Promise<{ status?: string; functionName?: string; page?: string }>
 }) {
   const params = await searchParams
-  const runs = await getRuns({
+  const parsedPage = Number.parseInt(params.page ?? "1", 10)
+  const page = Number.isFinite(parsedPage) && parsedPage >= 1 ? parsedPage : 1
+  const filter = {
     ...(params.status !== undefined ? { status: params.status } : {}),
     ...(params.functionName !== undefined ? { functionName: params.functionName } : {}),
-    limit: 100,
-  }).catch(() => [])
+  }
+  const [runs, total] = await Promise.all([
+    getRuns({ ...filter, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }).catch(() => []),
+    getRunCount(filter).catch(() => null),
+  ])
+  const hasNext = total !== null ? page * PAGE_SIZE < total : runs.length === PAGE_SIZE
+  const pageHref = (p: number) => {
+    const q = new URLSearchParams()
+    if (params.status) q.set("status", params.status)
+    if (params.functionName) q.set("functionName", params.functionName)
+    if (p > 1) q.set("page", String(p))
+    const qs = q.toString()
+    return qs ? `/runs?${qs}` : "/runs"
+  }
 
   return (
     <div className="space-y-6">
@@ -46,7 +62,8 @@ export default async function RunsPage({
               : params.functionName
                 ? `Filtered by: ${params.functionName}`
                 : "All runs"}
-            {" "}· {runs.length} result{runs.length !== 1 ? "s" : ""}
+            {" "}· {total ?? runs.length} total
+            {total !== null && total > 0 && ` · page ${page} of ${Math.ceil(total / PAGE_SIZE)}`}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -91,8 +108,8 @@ export default async function RunsPage({
               <tr key={run.id} className="bg-zinc-900 hover:bg-zinc-800/60 transition-colors">
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
-                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${dotColor(run.status)}`} />
-                    <span className={`text-xs font-medium ${textColor(run.status)}`}>{run.status}</span>
+                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${statusDotColor(run.status)}`} />
+                    <span className={`text-xs font-medium ${statusTextColor(run.status)}`}>{run.status}</span>
                   </div>
                 </td>
                 <td className="px-4 py-3">
@@ -122,6 +139,17 @@ export default async function RunsPage({
           <div className="py-16 text-center text-zinc-500 text-sm">No runs found.</div>
         )}
       </div>
+
+      {(page > 1 || hasNext) && (
+        <div className="flex items-center justify-between text-xs">
+          {page > 1 ? (
+            <a href={pageHref(page - 1)} className="text-indigo-400 hover:text-indigo-300">← Previous</a>
+          ) : <span />}
+          {hasNext && (
+            <a href={pageHref(page + 1)} className="text-indigo-400 hover:text-indigo-300">Next →</a>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -150,26 +178,4 @@ function StatusFilter({ current }: { current?: string | undefined }) {
       ))}
     </div>
   )
-}
-
-function dotColor(status: string) {
-  switch (status) {
-    case "completed": return "bg-emerald-500"
-    case "running": return "bg-blue-500"
-    case "retrying": return "bg-amber-500"
-    case "failed": return "bg-red-500"
-    case "pending": return "bg-zinc-500"
-    default: return "bg-zinc-600"
-  }
-}
-
-function textColor(status: string) {
-  switch (status) {
-    case "completed": return "text-emerald-400"
-    case "running": return "text-blue-400"
-    case "retrying": return "text-amber-400"
-    case "failed": return "text-red-400"
-    case "pending": return "text-zinc-300"
-    default: return "text-zinc-400"
-  }
 }
