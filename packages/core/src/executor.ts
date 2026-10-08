@@ -112,25 +112,19 @@ export const dispatchEvent = (event: EventPayload) =>
       }
     }
 
-    yield* storage.saveEvent(event)
+    const runs = fns.map((fn) => ({
+      id: randomUUID(),
+      functionName: fn.name,
+      eventId: event.id,
+      status: "pending" as const,
+      startedAt: new Date(),
+      completedAt: Option.none<Date>(),
+      error: Option.none<string>(),
+      retryAfter: Option.none<Date>(),
+    }))
 
-    return yield* Effect.forEach(
-      fns,
-      (fn) =>
-        Effect.gen(function* () {
-          const runId = randomUUID()
-          yield* storage.createRun({
-            id: runId,
-            functionName: fn.name,
-            eventId: event.id,
-            status: "pending",
-            startedAt: new Date(),
-            completedAt: Option.none(),
-            error: Option.none(),
-            retryAfter: Option.none(),
-          })
-          return { runId, functionName: fn.name }
-        }),
-      { concurrency: "unbounded" },
-    )
+    // Event and all runs are persisted atomically
+    yield* storage.saveEventWithRuns(event, runs)
+
+    return runs.map((r) => ({ runId: r.id, functionName: r.functionName }))
   })

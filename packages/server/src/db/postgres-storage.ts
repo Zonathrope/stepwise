@@ -61,6 +61,33 @@ export const PostgresStorageLive = (db: Db) =>
           catch: toStorageError,
         }),
 
+      saveEventWithRuns: (event, newRuns) =>
+        Effect.tryPromise({
+          try: () =>
+            db.transaction(async (tx) => {
+              await tx.insert(schema.events).values({
+                id: event.id,
+                name: event.name,
+                data: event.data,
+                timestamp: event.timestamp,
+              }).onConflictDoNothing()
+              if (newRuns.length === 0) return
+              await tx.insert(schema.runs).values(
+                newRuns.map((run) => ({
+                  id: run.id,
+                  integrationName: run.functionName,
+                  eventId: run.eventId,
+                  status: run.status,
+                  startedAt: run.startedAt,
+                  completedAt: Option.getOrNull(run.completedAt),
+                  retryAfter: Option.getOrNull(run.retryAfter),
+                  error: Option.getOrNull(run.error),
+                })),
+              )
+            }),
+          catch: toStorageError,
+        }),
+
       createRun: (run) =>
         Effect.tryPromise({
           try: () =>
@@ -176,19 +203,17 @@ export const PostgresStorageLive = (db: Db) =>
           catch: toStorageError,
         }),
 
-      updateStep: (id, patch) =>
+      updateStep: (stepId, patch) =>
         Effect.tryPromise({
-          try: () => {
-            const [runId, ...nameParts] = id.split(":")
-            const name = nameParts.join(":")
-            return db.update(schema.steps).set({
+          try: () =>
+            db.update(schema.steps).set({
               ...(patch.status !== undefined && { status: patch.status }),
               ...(patch.attempt !== undefined && { attempt: patch.attempt }),
+              ...(patch.startedAt !== undefined && { startedAt: Option.getOrNull(patch.startedAt) }),
               ...(patch.completedAt !== undefined && { completedAt: Option.getOrNull(patch.completedAt) }),
               ...(patch.output !== undefined && { output: Option.getOrNull(patch.output) }),
               ...(patch.error !== undefined && { error: Option.getOrNull(patch.error) }),
-            }).where(and(eq(schema.steps.runId, runId!), eq(schema.steps.name, name)))
-          },
+            }).where(eq(schema.steps.id, stepId)),
           catch: toStorageError,
         }),
 
