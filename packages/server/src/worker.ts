@@ -9,6 +9,9 @@ const ADVISORY_LOCK_ID = 1234567890
 const NOTIFY_CHANNEL = "stepper_runs"
 const POLL_INTERVAL_MS = 5000
 
+/** Default max concurrent runs per worker when `concurrency` is omitted. */
+export const DEFAULT_CONCURRENCY = 5
+
 export interface WorkerOptions {
   db: Db
   storageLayer: Layer.Layer<Storage>
@@ -33,7 +36,7 @@ export class Worker {
     this.db = opts.db
     this.storageLayer = opts.storageLayer
     this.registryLayer = opts.registryLayer
-    this.concurrency = opts.concurrency ?? 10
+    this.concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY
   }
 
   async start(): Promise<void> {
@@ -114,7 +117,7 @@ export class Worker {
           const registry = yield* Registry
           const retryingRuns = yield* storage.listRuns({ status: "retrying" })
           const registered = registry.list().map((f: { name: string }) => f.name)
-          return retryingRuns.filter((r) => !registered.includes((r as any).functionName ?? (r as any).integrationName))
+          return retryingRuns.filter((r) => !registered.includes(r.functionName))
         }).pipe(
           Effect.provide(Layer.mergeAll(storageLayer, registryLayer)),
         ),

@@ -10,7 +10,7 @@ import { eventsRouter } from "./routes/events.js"
 import { runsRouter } from "./routes/runs.js"
 import { integrationsRouter } from "./routes/integrations.js"
 import type { ServerEnv } from "./types.js"
-import { Worker } from "./worker.js"
+import { Worker, DEFAULT_CONCURRENCY } from "./worker.js"
 import type { Db } from "./db/client.js"
 
 export interface SharedConfig<R> {
@@ -22,7 +22,7 @@ export interface SharedConfig<R> {
 export interface AppOptions<R> extends SharedConfig<R> {
   db: Db
   worker?: boolean       // default true
-  concurrency?: number
+  concurrency?: number   // default DEFAULT_CONCURRENCY (5)
   corsOrigins?: string[]
   port?: number
 }
@@ -90,7 +90,7 @@ export const createApp = <R>(opts: AppOptions<R>): { app: Hono<ServerEnv>; shutd
       db: opts.db,
       storageLayer: opts.storageLayer,
       registryLayer,
-      ...(opts.concurrency !== undefined ? { concurrency: opts.concurrency } : {}),
+      concurrency: opts.concurrency ?? DEFAULT_CONCURRENCY,
     })
     // Start worker asynchronously — don't block app startup
     worker.start().catch((err) => {
