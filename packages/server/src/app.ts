@@ -68,10 +68,23 @@ export const createApp = <R>(opts: AppOptions<R>): { app: Hono<ServerEnv>; shutd
         stream.writeSSE({ data: JSON.stringify(msg) }).catch(() => {})
       })
 
-      stream.writeSSE({ data: JSON.stringify({ type: "connected" }) })
+      // Always remove the subscriber on disconnect
+      stream.onAbort(unsub)
 
-      await stream.sleep(30 * 60 * 1000)
-      unsub()
+      try {
+        await stream.writeSSE({ data: JSON.stringify({ type: "connected" }) })
+
+        // Keepalive comment so proxies don't drop idle connections
+        while (!stream.aborted && !stream.closed) {
+          await stream.sleep(25_000)
+          if (stream.aborted || stream.closed) break
+          await stream.write(":ping\n\n")
+        }
+      } catch {
+        // write failed: client is gone
+      } finally {
+        unsub()
+      }
     }),
   )
 
