@@ -28,7 +28,7 @@ export function createClient<
   const Fns extends readonly StepperFunction<any, any, any>[],
 >(
   _functions: Fns,
-  opts: { serverUrl: string },
+  opts: { serverUrl: string; token?: string },
 ): StepperClient<InferEventMap<Fns>> {
   const baseUrl = opts.serverUrl.replace(/\/$/, "")
 
@@ -36,7 +36,10 @@ export function createClient<
     async send(event, data) {
       const res = await fetch(`${baseUrl}/api/events`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(opts.token ? { Authorization: `Bearer ${opts.token}` } : {}),
+        },
         body: JSON.stringify({ name: event, data }),
       })
 
