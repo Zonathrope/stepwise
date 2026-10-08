@@ -1,7 +1,7 @@
 import { getRuns } from "@/lib/api"
 import { relativeTime, duration, absoluteTime } from "@/lib/utils"
 
-const STATUSES = ["pending", "running", "retrying", "completed", "failed", "cancelled"] as const
+const STATUSES = ["pending", "running", "retrying", "waiting", "completed", "failed", "cancelled"] as const
 
 export default async function RunsPage({
   searchParams,
@@ -115,6 +115,7 @@ function dotColor(status: string) {
     case "completed": return "bg-emerald-500"
     case "running": return "bg-blue-500"
     case "retrying": return "bg-amber-500"
+    case "waiting": return "bg-sky-500"
     case "failed": return "bg-red-500"
     case "pending": return "bg-zinc-500"
     default: return "bg-zinc-600"
@@ -126,6 +127,7 @@ function textColor(status: string) {
     case "completed": return "text-emerald-400"
     case "running": return "text-blue-400"
     case "retrying": return "text-amber-400"
+    case "waiting": return "text-sky-400"
     case "failed": return "text-red-400"
     case "pending": return "text-zinc-300"
     default: return "text-zinc-400"

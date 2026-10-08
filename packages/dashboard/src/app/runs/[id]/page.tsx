@@ -24,7 +24,7 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
   const run = await getRun(id).catch(() => null)
   if (!run) notFound()
 
-  const canCancel = run.status === "pending" || run.status === "retrying"
+  const canCancel = run.status === "pending" || run.status === "retrying" || run.status === "waiting"
   const totalDuration = run.completedAt ? duration(run.startedAt, run.completedAt) : null
 
   return (
@@ -170,6 +170,7 @@ function StatusBadge({ status }: { status: string }) {
     completed: "text-emerald-400 bg-emerald-950/50 border-emerald-800/60",
     running:   "text-blue-400 bg-blue-950/50 border-blue-800/60",
     retrying:  "text-amber-400 bg-amber-950/50 border-amber-800/60",
+    waiting:   "text-sky-400 bg-sky-950/50 border-sky-800/60",
     failed:    "text-red-400 bg-red-950/50 border-red-800/60",
     pending:   "text-zinc-300 bg-zinc-800/50 border-zinc-700",
     cancelled: "text-zinc-500 bg-zinc-800/30 border-zinc-700",

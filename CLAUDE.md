@@ -68,13 +68,15 @@ Key files:
 - `storage.ts` — `Storage` service interface + `InMemoryStorageLive`; `listRuns` accepts `eligibleForPickup` flag
 - `function.ts` — `defineFunction()` factory; `StepperFunction<TData, TError, R>` type
 - `registry.ts` — `Registry` maps event names → matching functions
-- `step-context.ts` — `StepContext`; `step.run(name, fn, opts?)` and `step.sleep(name, duration)`
+- `step-context.ts` — `StepContext`; `step.run(name, fn, opts?)` and `step.sleep(name, duration)`; `step.waitForEvent(name, {event, match?, timeout?, onTimeout?})`
 - `executor.ts` — `dispatchEvent()` creates pending runs and returns `Array<{runId, functionName}>`; `executeRun()` drives a single run
 - `testing.ts` (subpath `@integration-stepper/core/testing`) — `createTestRunner(fn, layer)` for unit tests
 
 **Memoised replay model**: on each pickup, the handler re-executes from the top. Completed steps return their stored output immediately. When a new step completes for the first time, `step.run` throws `StepperPark` to abort the handler — the run goes back to `"pending"` for the next pickup to continue from where it left off. **Handlers must be deterministic** (same step sequence on every execution).
 
 **`StepperPark`** is a sentinel error (`_tag: "StepperPark"`) caught by `executeRun`. It is not a real failure — it signals either "step just completed, park the run" or "sleep, set retryAfter". `executeRun.catchAll` distinguishes it from real errors by tag.
+
+**`step.waitForEvent`**: parks the run as `"waiting"` with a persisted `waitingFor` filter (`match` = dotted `event.data` paths -> required values; serialisable, not a predicate). `dispatchEvent` resumes matching waiting runs via `storage.resumeWaitingRun` (atomic; the event becomes the step output). `timeout` is stored in `retryAfter`; a waiting run is pickup-eligible only once it elapses, then the step resolves `null` (or fails with `StepError` if `onTimeout: "throw"`). Migration `0001_wait_for_event.sql`. Tests: `pnpm --filter @integration-stepper/core test`.
 
 **Step retry**: `step.run(name, fn, { maxAttempts: 3 })` — on fn() failure, the step is marked `"failed"` (or left `"running"` if attempts remain), and either `StepperPark` re-queues the run or `StepError` terminally fails it.
 
@@ -95,7 +97,7 @@ HTTP API:
 - `POST /api/events` — idempotent (duplicate `id` returns `200`); returns `{ id, runs: [{runId, functionName}] }`; fires `NOTIFY stepper_runs`
 - `GET /api/runs` — filterable by `functionName`, `status`, `limit`, `offset`
 - `GET /api/runs/:id` — run detail with step list; includes `retryAfter`
-- `POST /api/runs/:id/cancel` — cancels `pending`/`retrying` runs; `409` if already running/completed/failed
+- `POST /api/runs/:id/cancel` — cancels `pending`/`retrying`/`waiting` runs; `409` if already running/completed/failed
 - `GET /api/integrations` — lists registered functions
 - `GET /api/stream` — SSE for live updates
 - `GET /health`

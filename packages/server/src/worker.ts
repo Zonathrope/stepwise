@@ -192,8 +192,14 @@ export class Worker {
           sql`
             SELECT id, integration_name
             FROM runs
-            WHERE status IN ('pending', 'retrying')
-              AND (retry_after IS NULL OR retry_after <= NOW())
+            WHERE (
+                status IN ('pending', 'retrying')
+                AND (retry_after IS NULL OR retry_after <= NOW())
+              ) OR (
+                status = 'waiting'
+                AND retry_after IS NOT NULL
+                AND retry_after <= NOW()
+              )
             ORDER BY started_at
             FOR UPDATE SKIP LOCKED
             LIMIT ${globalSlots * 2}

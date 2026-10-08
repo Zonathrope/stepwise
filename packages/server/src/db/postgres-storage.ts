@@ -1,6 +1,6 @@
 import { Effect, Layer, Option } from "effect"
-import { eq, and, inArray, isNull, lte, or, sql, desc } from "drizzle-orm"
-import { Storage, StorageError, type EventPayload, type RunRecord, type StepRecord, type RunStatus } from "@integration-stepper/core"
+import { eq, and, inArray, isNull, isNotNull, lte, or, sql, desc } from "drizzle-orm"
+import { Storage, StorageError, type EventPayload, type RunRecord, type StepRecord, type RunStatus, type WaitingFor } from "@integration-stepper/core"
 import type { Db } from "./client.js"
 import * as schema from "./schema.js"
 
@@ -13,6 +13,19 @@ const toEventPayload = (row: typeof schema.events.$inferSelect): EventPayload =>
   timestamp: row.timestamp,
 })
 
+type StoredWaitingFor = Omit<WaitingFor, "timeoutAt"> & { timeoutAt: string | null }
+
+const serializeWaitingFor = (w: WaitingFor): StoredWaitingFor => ({
+  ...w,
+  timeoutAt: w.timeoutAt ? w.timeoutAt.toISOString() : null,
+})
+
+const deserializeWaitingFor = (raw: unknown): Option.Option<WaitingFor> => {
+  if (raw === null || raw === undefined) return Option.none()
+  const w = raw as StoredWaitingFor
+  return Option.some({ ...w, timeoutAt: w.timeoutAt ? new Date(w.timeoutAt) : null })
+}
+
 const toRunRecord = (row: typeof schema.runs.$inferSelect): RunRecord => ({
   id: row.id,
   functionName: row.integrationName,
@@ -22,6 +35,7 @@ const toRunRecord = (row: typeof schema.runs.$inferSelect): RunRecord => ({
   completedAt: Option.fromNullable(row.completedAt),
   retryAfter: Option.fromNullable(row.retryAfter),
   error: Option.fromNullable(row.error),
+  waitingFor: deserializeWaitingFor(row.waitingFor),
 })
 
 const toStepRecord = (row: typeof schema.steps.$inferSelect): StepRecord => ({
@@ -73,6 +87,10 @@ export const PostgresStorageLive = (db: Db) =>
               completedAt: Option.getOrNull(run.completedAt),
               retryAfter: Option.getOrNull(run.retryAfter),
               error: Option.getOrNull(run.error),
+              waitingFor: Option.match(run.waitingFor, {
+                onNone: () => null,
+                onSome: serializeWaitingFor,
+              }),
             }),
           catch: toStorageError,
         }),
@@ -85,6 +103,12 @@ export const PostgresStorageLive = (db: Db) =>
               ...(patch.completedAt !== undefined && { completedAt: Option.getOrNull(patch.completedAt) }),
               ...(patch.retryAfter !== undefined && { retryAfter: Option.getOrNull(patch.retryAfter) }),
               ...(patch.error !== undefined && { error: Option.getOrNull(patch.error) }),
+              ...(patch.waitingFor !== undefined && {
+                waitingFor: Option.match(patch.waitingFor, {
+                  onNone: () => null,
+                  onSome: serializeWaitingFor,
+                }),
+              }),
             }).where(eq(schema.runs.id, id)),
           catch: toStorageError,
         }),
@@ -117,10 +141,17 @@ export const PostgresStorageLive = (db: Db) =>
 
             if (opts?.eligibleForPickup) {
               conditions.push(
-                inArray(schema.runs.status, ["pending", "retrying"]),
                 or(
-                  isNull(schema.runs.retryAfter),
-                  lte(schema.runs.retryAfter, sql`NOW()`),
+                  and(
+                    inArray(schema.runs.status, ["pending", "retrying"]),
+                    or(isNull(schema.runs.retryAfter), lte(schema.runs.retryAfter, sql`NOW()`)),
+                  ),
+                  // waiting runs are only eligible once their wait timeout has elapsed
+                  and(
+                    eq(schema.runs.status, "waiting"),
+                    isNotNull(schema.runs.retryAfter),
+                    lte(schema.runs.retryAfter, sql`NOW()`),
+                  ),
                 )!,
               )
             }
@@ -136,6 +167,47 @@ export const PostgresStorageLive = (db: Db) =>
 
             return rows.map(toRunRecord)
           },
+          catch: toStorageError,
+        }),
+
+      listWaitingRuns: (eventName) =>
+        Effect.tryPromise({
+          try: async () => {
+            const rows = await db
+              .select()
+              .from(schema.runs)
+              .where(
+                and(
+                  eq(schema.runs.status, "waiting"),
+                  sql`${schema.runs.waitingFor}->>'event' = ${eventName}`,
+                ),
+              )
+            return rows.map(toRunRecord)
+          },
+          catch: toStorageError,
+        }),
+
+      resumeWaitingRun: (runId, stepName, output) =>
+        Effect.tryPromise({
+          try: () =>
+            db.transaction(async (tx) => {
+              // Claim first: only one resumer (event or timeout pickup) can win the transition
+              const claimed = await tx
+                .update(schema.runs)
+                .set({ status: "pending", retryAfter: null, waitingFor: null })
+                .where(and(eq(schema.runs.id, runId), eq(schema.runs.status, "waiting")))
+                .returning({ id: schema.runs.id })
+              if (claimed.length === 0) return false
+              await tx
+                .update(schema.steps)
+                .set({
+                  status: "completed",
+                  completedAt: new Date(),
+                  output: output as Record<string, unknown> | null,
+                })
+                .where(and(eq(schema.steps.runId, runId), eq(schema.steps.name, stepName)))
+              return true
+            }),
           catch: toStorageError,
         }),
 

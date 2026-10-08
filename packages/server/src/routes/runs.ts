@@ -73,7 +73,7 @@ runsRouter.post("/:id/cancel", async (c) => {
       return { ok: false, notFound: true } as const
     }
     const run = runOption.value
-    if (run.status !== "pending" && run.status !== "retrying") {
+    if (run.status !== "pending" && run.status !== "retrying" && run.status !== "waiting") {
       return { ok: false, notFound: false, status: run.status } as const
     }
     yield* storage.updateRun(runId, { status: "cancelled" })
@@ -111,6 +111,15 @@ const serializeRun = (run: RunRecord) => ({
   completedAt: Option.getOrNull(run.completedAt)?.toISOString() ?? null,
   retryAfter: Option.getOrNull(run.retryAfter)?.toISOString() ?? null,
   error: Option.getOrNull(run.error),
+  waitingFor: Option.match(run.waitingFor, {
+    onNone: () => null,
+    onSome: (w) => ({
+      event: w.event,
+      match: w.match ?? null,
+      timeoutAt: w.timeoutAt?.toISOString() ?? null,
+      onTimeout: w.onTimeout,
+    }),
+  }),
 })
 
 const serializeStep = (step: StepRecord) => ({

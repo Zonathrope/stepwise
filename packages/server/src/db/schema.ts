@@ -14,12 +14,13 @@ export const runs = pgTable("runs", {
     .notNull()
     .references(() => events.id),
   status: text("status", {
-    enum: ["pending", "running", "retrying", "completed", "failed", "cancelled"],
+    enum: ["pending", "running", "retrying", "waiting", "completed", "failed", "cancelled"],
   }).notNull(),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
   completedAt: timestamp("completed_at", { withTimezone: true }),
   retryAfter: timestamp("retry_after", { withTimezone: true }),
   error: text("error"),
+  waitingFor: jsonb("waiting_for"),
 })
 
 export const steps = pgTable("steps", {
