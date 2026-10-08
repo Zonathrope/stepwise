@@ -6,6 +6,15 @@ export interface Storage {
   readonly saveEvent: (event: EventPayload) => Effect.Effect<void, StorageError>
   readonly getEvent: (id: string) => Effect.Effect<Option.Option<EventPayload>, StorageError>
 
+  /**
+   * Atomically persist an event together with all runs created for it.
+   * Either everything is stored or nothing is; a failure leaves no orphan event or partial runs.
+   */
+  readonly saveEventWithRuns: (
+    event: EventPayload,
+    runs: ReadonlyArray<RunRecord>,
+  ) => Effect.Effect<void, StorageError>
+
   readonly createRun: (run: RunRecord) => Effect.Effect<void, StorageError>
   readonly updateRun: (
     id: string,
@@ -22,8 +31,12 @@ export interface Storage {
   }) => Effect.Effect<RunRecord[], StorageError>
 
   readonly createStep: (step: StepRecord) => Effect.Effect<void, StorageError>
+  /**
+   * Update a step record, identified by its own step record ID (`StepRecord.id`).
+   * This is NOT the run ID and NOT the `runId:name` lookup key used by `getStep`.
+   */
   readonly updateStep: (
-    id: string,
+    stepId: string,
     patch: Partial<Pick<StepRecord, "status" | "attempt" | "startedAt" | "completedAt" | "output" | "error">>,
   ) => Effect.Effect<void, StorageError>
   readonly getStep: (runId: string, stepKey: string) => Effect.Effect<Option.Option<StepRecord>, StorageError>
@@ -43,6 +56,16 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
   return Storage.of({
     saveEvent: (event) => wrap(() => { events.set(event.id, event) }),
     getEvent: (id) => wrap(() => Option.fromNullable(events.get(id))),
+
+    saveEventWithRuns: (event, newRuns) =>
+      wrap(() => {
+        // Validate first so a failure cannot leave partial state behind.
+        for (const r of newRuns) {
+          if (runs.has(r.id)) throw new Error(`Run already exists: ${r.id}`)
+        }
+        events.set(event.id, event)
+        for (const r of newRuns) runs.set(r.id, r)
+      }),
 
     createRun: (run) => wrap(() => { runs.set(run.id, run) }),
     updateRun: (id, patch) =>
@@ -74,13 +97,17 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
         return all.slice(offset, offset + limit)
       }),
 
-    createStep: (step) => wrap(() => { steps.set(`${step.runId}:${step.name}`, step) }),
-    updateStep: (id, patch) =>
+    createStep: (step) => wrap(() => { steps.set(step.id, step) }),
+    updateStep: (stepId, patch) =>
       wrap(() => {
-        const existing = steps.get(id)
-        if (existing) steps.set(id, { ...existing, ...patch } as StepRecord)
+        const existing = steps.get(stepId)
+        if (existing) steps.set(stepId, { ...existing, ...patch } as StepRecord)
       }),
-    getStep: (runId, stepKey) => wrap(() => Option.fromNullable(steps.get(`${runId}:${stepKey}`))),
+    getStep: (runId, stepKey) => wrap(() =>
+        Option.fromNullable(
+          Array.from(steps.values()).find((s) => s.runId === runId && s.name === stepKey),
+        ),
+      ),
     listSteps: (runId) =>
       wrap(() => Array.from(steps.values()).filter((s) => s.runId === runId)),
   })
