@@ -47,3 +47,15 @@ export class NonDeterministicHandlerError extends Data.TaggedError("NonDetermini
     return `Handler "${this.functionName}" is non-deterministic (pass ${this.pass}):\n${this.diff}`
   }
 }
+
+export interface ValidationIssue {
+  path?: ReadonlyArray<string | number>
+  message: string
+}
+
+export class ValidationError extends Data.TaggedError("ValidationError")<{
+  eventName: string
+  functionName: string
+  message: string
+  issues: ReadonlyArray<ValidationIssue>
+}> {}
