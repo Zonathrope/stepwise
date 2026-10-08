@@ -1,0 +1,5 @@
+# step.sleep is implemented via retry_after, not a real sleep
+
+`step.sleep(name, duration)` does not block the worker fiber for the duration. Instead, on first execution it records the step as completed, sets `retry_after = now + duration` on the Run, transitions the Run to `"retrying"`, and aborts the handler. The worker picks the Run up again after `retry_after` passes; memoization causes `step.sleep` to return immediately on re-execution, and the handler continues with subsequent steps.
+
+A real `Promise`-based sleep inside `step.run` would also "work" but is not durable: if the process restarts during the sleep interval, the timer is lost and the Run stalls. The `retry_after` approach stores the wake-up time in Postgres, surviving any number of process restarts. The cost is that `step.sleep` must abort handler execution — it does this by throwing an internal sentinel value caught by the executor, identical to how the first execution of any unresolved step terminates the handler early.

@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: stepper
+      POSTGRES_PASSWORD: stepper
+      POSTGRES_DB: stepper
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./packages/server/src/db/migrations/0000_initial.sql:/docker-entrypoint-initdb.d/0000_initial.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stepper"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  adminer:
+    image: adminer:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+
+  server:
+    build:
+      context: .
+      dockerfile: packages/server/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://stepper:stepper@postgres:5432/stepper
+      PORT: "4000"
+      STEPPER_DASHBOARD_TOKEN: ${STEPPER_DASHBOARD_TOKEN:-}
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: packages/dashboard/Dockerfile
+      args:
+        # Browser-visible URL — override via NEXT_PUBLIC_SERVER_URL env var if server is on a different host
+        NEXT_PUBLIC_SERVER_URL: ${NEXT_PUBLIC_SERVER_URL:-http://localhost:4000}
+    restart: unless-stopped
+    environment:
+      # Internal Docker URL for Next.js RSC server-side fetches
+      SERVER_URL: http://server:4000
+      STEPPER_DASHBOARD_TOKEN: ${STEPPER_DASHBOARD_TOKEN:-}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - server
+
+volumes:
+  postgres_data:
