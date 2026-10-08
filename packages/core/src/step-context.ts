@@ -45,7 +45,7 @@ export const makeStepContext = (runId: string, storage: Storage): StepContext =>
 
         // Already completed — return memoized output and continue handler
         if (Option.isSome(existing) && existing.value.status === "completed") {
-          return existing.value.output as A
+          return Option.getOrNull(existing.value.output) as A
         }
 
         const prevAttempt = Option.isSome(existing) ? existing.value.attempt : 0
