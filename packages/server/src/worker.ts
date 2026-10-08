@@ -1,6 +1,7 @@
 import { Effect, Layer } from "effect"
 import { executeRun, Registry, Storage } from "@integration-stepper/core"
-import { sql } from "drizzle-orm"
+import { sql, inArray } from "drizzle-orm"
+import * as schema from "./db/schema.js"
 import type { Db } from "./db/client.js"
 import postgres from "postgres"
 
@@ -184,39 +185,49 @@ export class Worker {
         functions.map((f) => [f.name, f.concurrency ?? Infinity]),
       )
 
-      // Pick up eligible runs — FOR UPDATE SKIP LOCKED prevents double-pickup
-      const picked = await this.db.execute<{ id: string; integration_name: string }>(
-        sql`
-          SELECT id, integration_name
-          FROM runs
-          WHERE status IN ('pending', 'retrying')
-            AND (retry_after IS NULL OR retry_after <= NOW())
-          FOR UPDATE SKIP LOCKED
-          LIMIT ${globalSlots * 2}
-        `
-      ) as unknown as Array<{ id: string; integration_name: string }>
+      // Atomically select and claim eligible runs inside a transaction so that
+      // concurrent workers cannot claim the same row (FOR UPDATE holds until COMMIT).
+      const picked = await this.db.transaction(async (tx) => {
+        const rows = await tx.execute<{ id: string; integration_name: string }>(
+          sql`
+            SELECT id, integration_name
+            FROM runs
+            WHERE status IN ('pending', 'retrying')
+              AND (retry_after IS NULL OR retry_after <= NOW())
+            ORDER BY started_at
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${globalSlots * 2}
+          `
+        ) as unknown as Array<{ id: string; integration_name: string }>
+
+        const eligible: typeof rows = []
+        const tempPerFunc = new Map(this.inFlightPerFunction)
+
+        for (const row of rows) {
+          if (eligible.length >= globalSlots) break
+          const funcName = row.integration_name
+          const perFuncLimit = funcConcurrencyMap.get(funcName) ?? Infinity
+          const inFlightForFunc = tempPerFunc.get(funcName) ?? 0
+          if (inFlightForFunc >= perFuncLimit) continue
+          eligible.push(row)
+          tempPerFunc.set(funcName, inFlightForFunc + 1)
+        }
+
+        if (eligible.length > 0) {
+          await tx.update(schema.runs)
+            .set({ status: "running" })
+            .where(inArray(schema.runs.id, eligible.map((r) => r.id)))
+        }
+
+        return eligible
+      })
 
       for (const row of picked) {
         if (this.shuttingDown) break
-        if (this.inFlightCount >= this.concurrency) break
-
         const funcName = row.integration_name
-        const perFuncLimit = funcConcurrencyMap.get(funcName) ?? Infinity
         const inFlightForFunc = this.inFlightPerFunction.get(funcName) ?? 0
-
-        if (inFlightForFunc >= perFuncLimit) {
-          // Function is at concurrency limit; skip
-          continue
-        }
-
-        // Mark as running
-        await this.db.execute(
-          sql`UPDATE runs SET status = 'running' WHERE id = ${row.id}`
-        )
-
         this.inFlightCount++
         this.inFlightPerFunction.set(funcName, inFlightForFunc + 1)
-
         void this.executeOne(row.id, funcName)
       }
     } catch (err) {
