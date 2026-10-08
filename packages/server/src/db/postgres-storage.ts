@@ -1,5 +1,5 @@
 import { Effect, Layer, Option } from "effect"
-import { eq, and, inArray, isNull, lte, or, sql, desc } from "drizzle-orm"
+import { eq, and, inArray, isNull, lte, or, sql, desc, count } from "drizzle-orm"
 import { Storage, StorageError, type EventPayload, type RunRecord, type StepRecord, type RunStatus } from "@integration-stepper/core"
 import type { Db } from "./client.js"
 import * as schema from "./schema.js"
@@ -17,7 +17,7 @@ const toRunRecord = (row: typeof schema.runs.$inferSelect): RunRecord => ({
   id: row.id,
   functionName: row.integrationName,
   eventId: row.eventId,
-  status: row.status as RunRecord["status"],
+  status: row.status,
   startedAt: row.startedAt,
   completedAt: Option.fromNullable(row.completedAt),
   retryAfter: Option.fromNullable(row.retryAfter),
@@ -28,7 +28,7 @@ const toStepRecord = (row: typeof schema.steps.$inferSelect): StepRecord => ({
   id: row.id,
   runId: row.runId,
   name: row.name,
-  status: row.status as StepRecord["status"],
+  status: row.status,
   attempt: row.attempt,
   maxAttempts: row.maxAttempts,
   startedAt: Option.fromNullable(row.startedAt),
@@ -166,6 +166,25 @@ export const PostgresStorageLive = (db: Db) =>
           catch: toStorageError,
         }),
 
+      countRuns: (opts) =>
+        Effect.tryPromise({
+          try: async () => {
+            const conditions = []
+            if (opts?.functionName) {
+              conditions.push(eq(schema.runs.integrationName, opts.functionName))
+            }
+            if (opts?.status) {
+              conditions.push(eq(schema.runs.status, opts.status))
+            }
+            const baseQuery = db.select({ value: count() }).from(schema.runs)
+            const rows = await (conditions.length > 0
+              ? baseQuery.where(and(...conditions))
+              : baseQuery)
+            return rows[0]?.value ?? 0
+          },
+          catch: toStorageError,
+        }),
+
       createStep: (step) =>
         Effect.tryPromise({
           try: () =>
@@ -178,7 +197,7 @@ export const PostgresStorageLive = (db: Db) =>
               maxAttempts: step.maxAttempts,
               startedAt: Option.getOrNull(step.startedAt),
               completedAt: Option.getOrNull(step.completedAt),
-              output: Option.getOrNull(step.output) as Record<string, unknown> | null,
+              output: Option.getOrNull(step.output),
               error: Option.getOrNull(step.error),
             }),
           catch: toStorageError,
@@ -192,7 +211,7 @@ export const PostgresStorageLive = (db: Db) =>
               ...(patch.attempt !== undefined && { attempt: patch.attempt }),
               ...(patch.startedAt !== undefined && { startedAt: Option.getOrNull(patch.startedAt) }),
               ...(patch.completedAt !== undefined && { completedAt: Option.getOrNull(patch.completedAt) }),
-              ...(patch.output !== undefined && { output: Option.getOrNull(patch.output) as Record<string, unknown> | null }),
+              ...(patch.output !== undefined && { output: Option.getOrNull(patch.output) }),
               ...(patch.error !== undefined && { error: Option.getOrNull(patch.error) }),
             }).where(eq(schema.steps.id, stepId)),
           catch: toStorageError,
