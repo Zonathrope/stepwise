@@ -50,7 +50,7 @@ export interface Storage {
    */
   readonly updateStep: (
     stepId: string,
-    patch: Partial<Pick<StepRecord, "status" | "attempt" | "startedAt" | "completedAt" | "output" | "error">>,
+    patch: Partial<Pick<StepRecord, "status" | "attempt" | "startedAt" | "completedAt" | "output" | "error" | "retryAfter">>,
   ) => Effect.Effect<void, StorageError>
   readonly getStep: (runId: string, stepKey: string) => Effect.Effect<Option.Option<StepRecord>, StorageError>
   readonly listSteps: (runId: string) => Effect.Effect<StepRecord[], StorageError>
@@ -152,6 +152,7 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
           completedAt: patch.completedAt !== undefined ? patch.completedAt : existing.completedAt,
           output: patch.output !== undefined ? patch.output : existing.output,
           error: patch.error !== undefined ? patch.error : existing.error,
+          retryAfter: patch.retryAfter !== undefined ? patch.retryAfter : existing.retryAfter,
         })
       }),
     getStep: (runId, stepKey) => wrap(() =>
