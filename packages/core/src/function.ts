@@ -2,6 +2,7 @@ import { Effect, type Layer } from "effect"
 import type { StepContext } from "./step-context.js"
 import type { EventPayload } from "./schema.js"
 import type { StepperPark } from "./errors.js"
+import { validateConcurrency, type ConcurrencyOption } from "./concurrency.js"
 import { parseCron } from "./cron.js"
 
 /**
@@ -39,7 +40,11 @@ export interface EventSchema<TData = unknown> {
 interface StepperFunctionBase<TData, TError, TRequirements> {
   readonly name: string
   readonly handler: FunctionHandler<TData, TError, TRequirements>
-  readonly concurrency?: number
+  /**
+   * Max runs of this function executing at once, across all workers. Use
+   * `{ limit, key: "data.userId" }` to apply the limit per value of an event field instead.
+   */
+  readonly concurrency?: ConcurrencyOption
   /** Optional validator for `event.data`; checked in `dispatchEvent` before any run is created. */
   readonly schema?: EventSchema<TData>
   /**
@@ -70,6 +75,7 @@ export const defineFunction = <TData = unknown, TError = never, TRequirements = 
   }
   // Fail fast on a malformed schedule instead of at the first scheduler tick
   if (hasCron) parseCron(def.cron!)
+  validateConcurrency(def.name, def.concurrency)
   return def
 }
 

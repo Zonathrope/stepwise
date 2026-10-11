@@ -48,6 +48,13 @@ export const WaitingFor = Schema.Struct({
 })
 export type WaitingFor = typeof WaitingFor.Type
 
+/** Concurrency bucket of a run: at most `limit` runs with the same `key` execute at once. */
+export const RunConcurrency = Schema.Struct({
+  key: Schema.String,
+  limit: Schema.Number,
+})
+export type RunConcurrency = typeof RunConcurrency.Type
+
 export const RunRecord = Schema.Struct({
   id: Schema.String,
   functionName: Schema.String,
@@ -58,6 +65,8 @@ export const RunRecord = Schema.Struct({
   error: Schema.OptionFromNullOr(Schema.String),
   retryAfter: Schema.OptionFromNullOr(Schema.DateFromSelf),
   waitingFor: Schema.OptionFromNullOr(WaitingFor),
+  /** Fixed at dispatch from the function's `concurrency` option and the triggering event. */
+  concurrency: Schema.OptionFromNullOr(RunConcurrency),
   /** The handler's return value, set when the run completes. */
   output: Schema.OptionFromNullOr(Schema.Unknown),
 })

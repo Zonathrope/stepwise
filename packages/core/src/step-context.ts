@@ -5,6 +5,7 @@ import type { Storage } from "./storage.js"
 import type { Registry } from "./registry.js"
 import type { StepperFunction } from "./function.js"
 import { computeBackoffDelay, type BackoffOptions } from "./backoff.js"
+import { runConcurrencyFor } from "./concurrency.js"
 import { StepError, StorageError, StepperPark } from "./errors.js"
 
 export interface StepOptions {
@@ -395,6 +396,7 @@ export const makeStepContext = (runId: string, storage: Storage, deps: StepConte
               retryAfter: Option.none(),
               waitingFor: Option.none(),
               output: Option.none(),
+              concurrency: Option.fromNullable(runConcurrencyFor(functionName, target.concurrency, event)),
             }
             yield* storage.saveEventWithRuns(event, [child])
           }

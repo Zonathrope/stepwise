@@ -11,6 +11,7 @@ import {
   makeStepContext,
   type InvokeResultData,
 } from "./step-context.js"
+import { runConcurrencyFor } from "./concurrency.js"
 import { RunNotFoundError, StepperPark, ValidationError, type ValidationIssue } from "./errors.js"
 
 const isStepperPark = (e: unknown): e is StepperPark =>
@@ -225,6 +226,7 @@ export const dispatchEvent = (event: EventPayload) =>
       error: Option.none<string>(),
       retryAfter: Option.none<Date>(),
       waitingFor: Option.none<WaitingFor>(),
+      concurrency: Option.fromNullable(runConcurrencyFor(fn.name, fn.concurrency, event)),
       output: Option.none<unknown>(),
     }))
 
@@ -286,6 +288,7 @@ export const dispatchCronTicks = (from: Date, to: Date) =>
           retryAfter: Option.none(),
           waitingFor: Option.none(),
           output: Option.none(),
+          concurrency: Option.fromNullable(runConcurrencyFor(fn.name, fn.concurrency, event)),
         }
 
         // false: the event already existed (another worker fired this tick), nothing was inserted

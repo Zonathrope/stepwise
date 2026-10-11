@@ -87,6 +87,8 @@ Key files:
 
 **`step.invoke`**: starts a child run of another registered function (event id `invoke:<parentRunId>:<stepKey>`, name `invoke/<fn>`; idempotent if the step re-executes; `schema` is validated first), then parks the parent via the waitForEvent machinery on an `invoke/result` event matching `{ childRunId }`. When the child reaches a terminal state, `notifyInvoker` (executor on completed/failed, the cancel route on cancelled) stores `invoke-result:<childRunId>` and resumes the parent. `WaitingFor.resultEventId` lets `executeRun` resume immediately if that event already exists when the parent parks (child finished first). Resolves with the child's `output`; a failed/cancelled/timed-out child fails the step with `StepError`.
 
+**Concurrency**: `defineFunction({ concurrency: 2 })` caps executing runs of the function across all workers; `concurrency: { limit: 1, key: "data.userId" }` applies the cap per value of an event field (`core/src/concurrency.ts`). `dispatchEvent` stamps each run with `concurrency: { key, limit }` (columns `concurrency_key`/`concurrency_limit`, migration `0005_concurrency_keys.sql`). Worker pickup: candidate query skips keys already at their limit (no starvation behind a busy key), takes `pg_advisory_xact_lock` per key in sorted order, recounts `running` runs per key, then `selectClaimable` picks. Only `running` runs occupy a slot; sleeping/waiting/retrying runs do not.
+
 **Step retry**: `step.run(name, fn, { maxAttempts: 3 })` — on fn() failure, the step is marked `"failed"` (or left `"running"` if attempts remain), and either `StepperPark` re-queues the run or `StepError` terminally fails it.
 
 ### packages/server
@@ -97,7 +99,7 @@ Hono app wired to Postgres via Drizzle, plus the async worker.
 - `db/postgres-storage.ts` — `Storage` implementation; `listRuns` with `eligibleForPickup` uses `FOR UPDATE SKIP LOCKED`-friendly filter
 - `db/migrations/0000_initial.sql` — apply once with `psql $DATABASE_URL -f ...`
 - `app.ts` — `createApp<R>(opts)` returns `{ app, shutdown }`; auth middleware reads `STEPPER_DASHBOARD_TOKEN`; starts `Worker` internally unless `worker: false`
-- `worker.ts` — `Worker` class: LISTEN/NOTIFY on `"stepper_runs"` + 5s poll fallback; advisory lock for crash recovery on startup; per-function concurrency tracking
+- `worker.ts` — `Worker` class: LISTEN/NOTIFY on `"stepper_runs"` + 5s poll fallback; advisory lock for crash recovery on startup; only claims runs of functions in its registry; enforces function concurrency limits across workers at pickup (see **Concurrency** below)
 - `worker-factory.ts` — `createWorker(config)` for running the worker in a separate process
 - `sse.ts` — `SseBroadcaster` fan-out
 - `bin.ts` — standalone entry; wires SIGTERM/SIGINT to `shutdown()`

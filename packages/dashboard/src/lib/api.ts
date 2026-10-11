@@ -49,7 +49,9 @@ export interface IntegrationSummary {
   /** Exactly one of `event` / `cron` is set. */
   event: string | null
   cron: string | null
-  concurrency: number
+  /** Max executing runs (per key value when `concurrencyKey` is set); null = unlimited. */
+  concurrency: number | null
+  concurrencyKey: string | null
 }
 
 export async function getRuns(opts?: {

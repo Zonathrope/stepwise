@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import { dispatchCronTicks, executeRun, Registry, Storage } from "@integration-stepper/core"
+import { dispatchCronTicks, executeRun, Registry, selectClaimable, Storage } from "@integration-stepper/core"
 import { sql, inArray } from "drizzle-orm"
 import * as schema from "./db/schema.js"
 import type { Db } from "./db/client.js"
@@ -9,6 +9,8 @@ import { notifyRunUpdate } from "./run-updates.js"
 const ADVISORY_LOCK_ID = 1234567890
 const NOTIFY_CHANNEL = "stepper_runs"
 const POLL_INTERVAL_MS = 5000
+/** First key of the two-key advisory locks taken per concurrency key during pickup. */
+const CONCURRENCY_LOCK_NAMESPACE = 0x5354_4550
 const CRON_INTERVAL_MS = 5000
 /**
  * On startup, also fire cron ticks from this far back, so a tick that fell inside a restart
@@ -34,7 +36,6 @@ export class Worker {
 
   private shuttingDown = false
   private inFlightCount = 0
-  private readonly inFlightPerFunction = new Map<string, number>()
   private shutdownResolve: (() => void) | null = null
   private pollTimer: ReturnType<typeof setTimeout> | null = null
   private cronTimer: ReturnType<typeof setTimeout> | null = null
@@ -221,84 +222,110 @@ export class Worker {
   private async pickupCycle(): Promise<void> {
     if (this.shuttingDown) return
 
-    const globalSlots = this.concurrency - this.inFlightCount
-    if (globalSlots <= 0) return
+    const slots = this.concurrency - this.inFlightCount
+    if (slots <= 0) return
 
     try {
-      // Get registry to know per-function concurrency limits
-      const registryResult = await Effect.runPromiseExit(
-        Effect.gen(function* () {
-          const registry = yield* Registry
-          return registry.list()
-        }).pipe(Effect.provide(this.registryLayer)),
+      // Only claim runs this worker can execute. Claiming a run of an unknown function (another
+      // service's, or one removed in a deploy) would strand it in "running" forever.
+      const registered = await Effect.runPromise(
+        Effect.map(Registry, (r) => r.list().map((f) => f.name)).pipe(Effect.provide(this.registryLayer)),
       )
+      if (registered.length === 0) return
 
-      const functions: Array<{ name: string; concurrency?: number }> =
-        registryResult._tag === "Success" ? registryResult.value : []
-
-      const funcConcurrencyMap = new Map<string, number>(
-        functions.map((f) => [f.name, f.concurrency ?? Infinity]),
-      )
-
-      // Atomically select and claim eligible runs inside a transaction so that
-      // concurrent workers cannot claim the same row (FOR UPDATE holds until COMMIT).
-      const picked = await this.db.transaction(async (tx) => {
-        const rows = await tx.execute<{ id: string; integration_name: string }>(
+      const { picked, heldBack } = await this.db.transaction(async (tx) => {
+        // Candidates oldest first. Runs whose concurrency key is already at its limit are
+        // filtered out here so a saturated key cannot starve runs queued behind it.
+        // FOR UPDATE SKIP LOCKED keeps concurrent workers off the same rows until COMMIT.
+        const rows = await tx.execute<{
+          id: string
+          concurrency_key: string | null
+          concurrency_limit: number | null
+        }>(
           sql`
-            SELECT id, integration_name
+            SELECT id, concurrency_key, concurrency_limit
             FROM runs
             WHERE (
-                status IN ('pending', 'retrying')
-                AND (retry_after IS NULL OR retry_after <= NOW())
-              ) OR (
-                status = 'waiting'
-                AND retry_after IS NOT NULL
-                AND retry_after <= NOW()
+                (
+                  status IN ('pending', 'retrying')
+                  AND (retry_after IS NULL OR retry_after <= NOW())
+                ) OR (
+                  status = 'waiting'
+                  AND retry_after IS NOT NULL
+                  AND retry_after <= NOW()
+                )
+              )
+              AND integration_name IN (${sql.join(registered.map((n) => sql`${n}`), sql`, `)})
+              AND (
+                concurrency_key IS NULL
+                OR concurrency_limit > (
+                  SELECT count(*) FROM runs AS r
+                  WHERE r.concurrency_key = runs.concurrency_key AND r.status = 'running'
+                )
               )
             ORDER BY started_at
             FOR UPDATE SKIP LOCKED
-            LIMIT ${globalSlots * 2}
+            LIMIT ${slots * 4}
           `
         )
 
-        const eligible: { id: string; integration_name: string }[] = []
-        const tempPerFunc = new Map(this.inFlightPerFunction)
+        const candidates = rows.map((r) => ({
+          id: r.id,
+          concurrency:
+            r.concurrency_key !== null && r.concurrency_limit !== null
+              ? { key: r.concurrency_key, limit: r.concurrency_limit }
+              : null,
+        }))
 
-        for (const row of rows) {
-          if (eligible.length >= globalSlots) break
-          const funcName = row.integration_name
-          const perFuncLimit = funcConcurrencyMap.get(funcName) ?? Infinity
-          const inFlightForFunc = tempPerFunc.get(funcName) ?? 0
-          if (inFlightForFunc >= perFuncLimit) continue
-          eligible.push(row)
-          tempPerFunc.set(funcName, inFlightForFunc + 1)
+        // Serialise claimers per key: two workers holding different rows of the same key would
+        // otherwise both see the old running count. Locks are taken in sorted order (no
+        // deadlocks) and released at COMMIT, after which the next claimer counts our claims.
+        const keys = [...new Set(candidates.flatMap((c) => (c.concurrency ? [c.concurrency.key] : [])))].sort()
+        for (const key of keys) {
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(${CONCURRENCY_LOCK_NAMESPACE}, hashtext(${key}))`)
         }
 
-        if (eligible.length > 0) {
+        const runningByKey = new Map<string, number>()
+        if (keys.length > 0) {
+          const counts = await tx.execute<{ concurrency_key: string; running: number }>(
+            sql`
+              SELECT concurrency_key, count(*)::int AS running
+              FROM runs
+              WHERE status = 'running' AND concurrency_key IN (${sql.join(keys.map((k) => sql`${k}`), sql`, `)})
+              GROUP BY concurrency_key
+            `
+          )
+          for (const row of counts) runningByKey.set(row.concurrency_key, row.running)
+        }
+
+        const { claim, heldBack } = selectClaimable(candidates, runningByKey, slots)
+
+        if (claim.length > 0) {
           await tx.update(schema.runs)
             .set({ status: "running" })
-            .where(inArray(schema.runs.id, eligible.map((r) => r.id)))
+            .where(inArray(schema.runs.id, claim))
         }
 
-        return eligible
+        return { picked: claim, heldBack }
       })
 
-      for (const row of picked) void notifyRunUpdate(this.db, row.id)
+      for (const runId of picked) void notifyRunUpdate(this.db, runId)
 
-      for (const row of picked) {
+      for (const runId of picked) {
         if (this.shuttingDown) break
-        const funcName = row.integration_name
-        const inFlightForFunc = this.inFlightPerFunction.get(funcName) ?? 0
         this.inFlightCount++
-        this.inFlightPerFunction.set(funcName, inFlightForFunc + 1)
-        void this.executeOne(row.id, funcName)
+        void this.executeOne(runId)
       }
+
+      // Runs held back by a full key may have hidden eligible runs further down the queue;
+      // look again now that the saturated keys are filtered out by the candidate query.
+      if (heldBack > 0 && picked.length < slots) this.triggerPickup()
     } catch (err) {
       console.error("[worker] Pickup cycle error:", err)
     }
   }
 
-  private async executeOne(runId: string, funcName: string): Promise<void> {
+  private async executeOne(runId: string): Promise<void> {
     try {
       const result = await Effect.runPromiseExit(
         executeRun(runId).pipe(
@@ -314,17 +341,14 @@ export class Worker {
     } finally {
       void notifyRunUpdate(this.db, runId)
       this.inFlightCount--
-      const prev = this.inFlightPerFunction.get(funcName) ?? 1
-      if (prev <= 1) {
-        this.inFlightPerFunction.delete(funcName)
-      } else {
-        this.inFlightPerFunction.set(funcName, prev - 1)
-      }
 
       if (this.shuttingDown && this.inFlightCount === 0 && this.shutdownResolve) {
         this.shutdownResolve()
         this.shutdownResolve = null
       }
+
+      // A finished run frees a worker slot and possibly a concurrency-key slot
+      this.triggerPickup()
     }
   }
 }
