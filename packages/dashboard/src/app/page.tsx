@@ -83,8 +83,8 @@ export default async function OverviewPage() {
                 className="block bg-zinc-900 border border-zinc-800 hover:border-zinc-600 rounded-lg p-4 transition-colors">
                 <div className="text-sm font-medium text-zinc-100">{i.name}</div>
                 <div className="flex items-center gap-3 mt-1.5">
-                  <span className="text-xs text-zinc-500">on</span>
-                  <code className="text-xs text-indigo-300 bg-indigo-950/50 px-1.5 py-0.5 rounded">{i.event}</code>
+                  <span className="text-xs text-zinc-500">{i.cron ? "cron" : "on"}</span>
+                  <code className="text-xs text-indigo-300 bg-indigo-950/50 px-1.5 py-0.5 rounded">{i.cron ?? i.event}</code>
                 </div>
               </a>
             ))}

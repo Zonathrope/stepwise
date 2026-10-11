@@ -53,5 +53,7 @@ export const RunRecord = Schema.Struct({
   error: Schema.OptionFromNullOr(Schema.String),
   retryAfter: Schema.OptionFromNullOr(Schema.DateFromSelf),
   waitingFor: Schema.OptionFromNullOr(WaitingFor),
+  /** The handler's return value, set when the run completes. */
+  output: Schema.OptionFromNullOr(Schema.Unknown),
 })
 export type RunRecord = typeof RunRecord.Type
