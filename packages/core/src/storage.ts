@@ -5,20 +5,27 @@ import { StorageError } from "./errors.js"
 export interface Storage {
   readonly saveEvent: (event: EventPayload) => Effect.Effect<void, StorageError>
   readonly getEvent: (id: string) => Effect.Effect<Option.Option<EventPayload>, StorageError>
+  /** Events newest first, optionally filtered by exact name. */
+  readonly listEvents: (opts?: {
+    name?: string
+    limit?: number
+    offset?: number
+  }) => Effect.Effect<EventPayload[], StorageError>
 
   /**
    * Atomically persist an event together with all runs created for it.
    * Either everything is stored or nothing is; a failure leaves no orphan event or partial runs.
+   * Returns false, storing nothing, if an event with the same id already exists.
    */
   readonly saveEventWithRuns: (
     event: EventPayload,
     runs: ReadonlyArray<RunRecord>,
-  ) => Effect.Effect<void, StorageError>
+  ) => Effect.Effect<boolean, StorageError>
 
   readonly createRun: (run: RunRecord) => Effect.Effect<void, StorageError>
   readonly updateRun: (
     id: string,
-    patch: Partial<Pick<RunRecord, "status" | "completedAt" | "error" | "retryAfter" | "waitingFor" | "stepJournal">>,
+    patch: Partial<Pick<RunRecord, "status" | "completedAt" | "error" | "retryAfter" | "waitingFor" | "stepJournal" | "output">>,
   ) => Effect.Effect<void, StorageError>
   /**
    * Atomically apply `patch` only if the run's current status is in `from`.
@@ -27,7 +34,7 @@ export interface Storage {
   readonly transitionRun: (
     id: string,
     from: ReadonlyArray<RunStatus>,
-    patch: Partial<Pick<RunRecord, "status" | "completedAt" | "error" | "retryAfter">>,
+    patch: Partial<Pick<RunRecord, "status" | "completedAt" | "error" | "retryAfter" | "waitingFor" | "output" | "stepJournal">>,
   ) => Effect.Effect<boolean, StorageError>
   readonly getRun: (id: string) => Effect.Effect<Option.Option<RunRecord>, StorageError>
   readonly listRuns: (opts?: {
@@ -40,6 +47,7 @@ export interface Storage {
   }) => Effect.Effect<RunRecord[], StorageError>
   readonly countRuns: (opts?: {
     functionName?: string
+    eventId?: string
     status?: RunStatus
   }) => Effect.Effect<number, StorageError>
 
@@ -81,15 +89,25 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
   return Storage.of({
     saveEvent: (event) => wrap(() => { events.set(event.id, event) }),
     getEvent: (id) => wrap(() => Option.fromNullable(events.get(id))),
+    listEvents: (opts) =>
+      wrap(() => {
+        let all = Array.from(events.values())
+        if (opts?.name) all = all.filter((e) => e.name === opts.name)
+        all.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+        const offset = opts?.offset ?? 0
+        return all.slice(offset, offset + (opts?.limit ?? 50))
+      }),
 
     saveEventWithRuns: (event, newRuns) =>
       wrap(() => {
+        if (events.has(event.id)) return false
         // Validate first so a failure cannot leave partial state behind.
         for (const r of newRuns) {
           if (runs.has(r.id)) throw new Error(`Run already exists: ${r.id}`)
         }
         events.set(event.id, event)
         for (const r of newRuns) runs.set(r.id, r)
+        return true
       }),
 
     createRun: (run) => wrap(() => { runs.set(run.id, run) }),
@@ -109,6 +127,8 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
           waitingFor: patch.waitingFor !== undefined ? patch.waitingFor : existing.waitingFor,
           handlerVersion: existing.handlerVersion,
           stepJournal: patch.stepJournal !== undefined ? patch.stepJournal : existing.stepJournal,
+          concurrency: existing.concurrency,
+          output: patch.output !== undefined ? patch.output : existing.output,
         })
       }),
     transitionRun: (id, from, patch) =>
@@ -184,6 +204,7 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
         Array.from(runs.values()).filter(
           (r) =>
             (!opts?.functionName || r.functionName === opts.functionName) &&
+            (!opts?.eventId || r.eventId === opts.eventId) &&
             (!opts?.status || r.status === opts.status),
         ).length,
       ),

@@ -1,6 +1,6 @@
 import { Cause, Effect, Exit, Layer, Option } from "effect"
 import type { RunRecord, StepRecord } from "./schema.js"
-import type { StepperFunction } from "./function.js"
+import { provideFunctionLayer, type StepperFunction } from "./function.js"
 import { Storage, type Storage as StorageService, InMemoryStorageLive } from "./storage.js"
 import { Registry, RegistryLive } from "./registry.js"
 import { dispatchEvent, executeRun } from "./executor.js"
@@ -113,10 +113,7 @@ export const createTestRunner = <TData, TError, R>(
 
     // Bake fn's R requirements into the handler so the registry sees StepperFunction<_, _, never>.
     // This lets Effect.provide(program, baseLayer) resolve to Effect<_, _, never> without any leakage.
-    const wrapped: StepperFunction<TData, TError, never> = {
-      ...fn,
-      handler: (event, step) => fn.handler(event, step).pipe(Effect.provide(layer)),
-    }
+    const wrapped = provideFunctionLayer(fn, layer)
     const registryLayer = RegistryLive([wrapped])
     const baseLayer = Layer.merge(InMemoryStorageLive, registryLayer)
 

@@ -193,3 +193,98 @@ describe("describeRunError", () => {
     expect(describeRunError(new Error("x"))).toBe("Error: x")
   })
 })
+
+describe("version guard on step.parallel and step.invoke", () => {
+  it("journals a parallel group in declaration order and detects a changed group", async () => {
+    const { storage, deploy } = makeStore()
+    const group = (names: string[]) =>
+      defineFunction({
+        name: "fan",
+        event: "go",
+        handler: (_e, step) =>
+          Effect.gen(function* () {
+            yield* step.run("first", () => 1)
+            yield* step.parallel(Object.fromEntries(names.map((n) => [n, () => n])))
+            yield* step.run("last", () => 2)
+          }),
+      })
+    const v1 = deploy(group(["b", "a", "c"]))
+    const id = await start(v1)
+    await v1(executeRun(id)) // first
+    await v1(executeRun(id)) // the group
+    expect((await getRun(storage, id)).stepJournal).toEqual(["first#0", "b#0", "a#0", "c#0"])
+
+    const run = await drive(deploy(group(["b", "x", "c"])), storage, id)
+    expect(run.status).toBe("failed")
+    expect(Option.getOrNull(run.error)).toMatch(/step 2 is "x#0", but this run recorded "a#0"/)
+  })
+
+  it("fails before starting a child when an invoke step replaced a recorded step", async () => {
+    const { storage, deploy } = makeStore()
+    const child = defineFunction({ name: "child", event: "never", handler: () => Effect.succeed(1) })
+    const v1 = deploy(steps("f", ["a", "b"]))
+    const id = await start(v1)
+    await v1(executeRun(id))
+    await v1(executeRun(id)) // a, b recorded
+
+    const v2Fn = defineFunction({
+      name: "f",
+      event: "go",
+      handler: (_e, step) =>
+        Effect.gen(function* () {
+          yield* step.run("a", () => "a")
+          yield* step.invoke("call", { function: "child", data: {} })
+        }),
+    })
+    const storageLayer = Layer.succeed(Storage, storage)
+    const v2 = <A, E>(eff: Effect.Effect<A, E, any>) =>
+      Effect.runPromise(eff.pipe(Effect.provide(Layer.merge(storageLayer, RegistryLive([v2Fn, child])))) as Effect.Effect<A, E, never>)
+    const run = await drive(v2, storage, id)
+    expect(run.status).toBe("failed")
+    expect(Option.getOrNull(run.error)).toMatch(/step 1 is "call#0", but this run recorded "b#0"/)
+    const children = await Effect.runPromise(storage.listRuns({ functionName: "child" }))
+    expect(children).toHaveLength(0)
+  })
+
+  it("journals invoke steps and resumes them normally", async () => {
+    const { storage, deploy } = makeStore()
+    const child = defineFunction({ name: "child", event: "never", handler: () => Effect.succeed(41) })
+    const parent = defineFunction({
+      name: "p",
+      event: "go",
+      handler: (_e, step) =>
+        Effect.gen(function* () {
+          const n = yield* step.invoke<number>("call", { function: child, data: {} })
+          return n + 1
+        }),
+    })
+    const storageLayer = Layer.succeed(Storage, storage)
+    const both = <A, E>(eff: Effect.Effect<A, E, any>) =>
+      Effect.runPromise(eff.pipe(Effect.provide(Layer.merge(storageLayer, RegistryLive([parent, child])))) as Effect.Effect<A, E, never>)
+    const id = await start(both)
+    for (let i = 0; i < 10; i++) {
+      const eligible = await Effect.runPromise(storage.listRuns({ eligibleForPickup: true }))
+      if (eligible.length === 0) break
+      for (const r of eligible) await both(executeRun(r.id))
+    }
+    const run = await getRun(storage, id)
+    expect(run.status).toBe("completed")
+    expect(Option.getOrNull(run.output)).toBe(42)
+    expect(run.stepJournal).toEqual(["call#0"])
+  })
+
+  it("routes a declared-version failure through onFailure", async () => {
+    const { storage, deploy } = makeStore()
+    const v1 = deploy(steps("f", ["a", "b"], { version: "1" }))
+    const id = await start(v1)
+    await v1(executeRun(id))
+    const failures: unknown[] = []
+    const run = await drive(
+      deploy(steps("f", ["a", "b"], { version: "2", onFailure: (ctx: { error: unknown }) => Effect.sync(() => void failures.push(ctx.error)) })),
+      storage,
+      id,
+    )
+    expect(run.status).toBe("failed")
+    expect(failures).toHaveLength(1)
+  })
+})

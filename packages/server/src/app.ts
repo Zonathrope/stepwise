@@ -2,10 +2,11 @@ import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { logger } from "hono/logger"
 import { streamSSE } from "hono/streaming"
-import { Effect, type Layer } from "effect"
+import type { Layer } from "effect"
 import type { Storage, Registry, StepperFunction } from "@integration-stepper/core"
-import { RegistryLive } from "@integration-stepper/core"
+import { provideFunctionLayer, RegistryLive } from "@integration-stepper/core"
 import { SseBroadcaster } from "./sse.js"
+import { relayRunUpdates } from "./run-updates.js"
 import { eventsRouter } from "./routes/events.js"
 import { runsRouter } from "./routes/runs.js"
 import { integrationsRouter } from "./routes/integrations.js"
@@ -34,11 +35,9 @@ export const createApp = <R>(opts: AppOptions<R>): { app: Hono<ServerEnv>; shutd
   // Bake each function's R requirements into its handler so the registry stores
   // StepperFunction<_, _, never>. This ensures the worker's executeRun never has
   // unsatisfied R requirements at runtime.
-  const wrappedFunctions: StepperFunction<any, any, never>[] = opts.functions.map((fn) => ({
-    ...fn,
-    handler: (...args: Parameters<typeof fn.handler>) =>
-      fn.handler(...args).pipe(Effect.provide(opts.layer)),
-  }))
+  const wrappedFunctions: StepperFunction<any, any, never>[] = opts.functions.map((fn) =>
+    provideFunctionLayer(fn, opts.layer),
+  )
   const registryLayer = RegistryLive(wrappedFunctions)
 
   const app = new Hono<ServerEnv>()
@@ -133,7 +132,11 @@ export const createApp = <R>(opts: AppOptions<R>): { app: Hono<ServerEnv>; shutd
     })
   }
 
+  // Relay run changes (from this or any other worker process) to SSE clients
+  const stopRelay = relayRunUpdates(sse)
+
   const shutdown = async (): Promise<void> => {
+    await (await stopRelay)()
     if (worker) {
       await worker.shutdown()
     }

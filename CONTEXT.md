@@ -21,10 +21,10 @@ The storage identity of a Step within a Run: `runId + ":" + stepName + "#" + cal
 The mechanism by which dispatched Runs are held until a worker picks them up for execution. Decouples event receipt (HTTP) from execution (worker).
 
 **Worker**
-The process or loop that dequeues pending Runs and executes them by invoking the Function handler with a StepContext. Notified of new work via Postgres `LISTEN/NOTIFY` on a dedicated channel; also polls periodically as a safety net.
+The process or loop that dequeues pending Runs and executes them by invoking the Function handler with a StepContext. Notified of new work via Postgres `LISTEN/NOTIFY` on the `stepper_runs` channel; also polls every 5s as a safety net. Runs in the same process as the Hono server by default (`createApp({ worker: true })`); can be separated via `createWorker()` for independent deployment. Executes up to `concurrency` (default 5, `DEFAULT_CONCURRENCY`) Runs simultaneously, further capped per Function by the Function's own `concurrency`. On startup, re-queues all Runs in `"running"` state (crash recovery).
 
 **Retry backoff**
-The delay before a failed Run is re-queued. Configurable per Function via a `retryDelay` schedule; falls back to exponential backoff with jitter (`min(30, 2^attempt)` seconds ± jitter). Once a Step exhausts its `maxAttempts`, the Run is permanently `failed` and never re-queued.
+The delay before a failed Step is re-attempted. Configured per Step via `step.run(name, fn, { maxAttempts, backoff })`, where `backoff` is `immediate` (the default), `fixed`, `linear` or `exponential`, with optional `maxDelay` and jitter. While attempts remain the Run is parked as `"retrying"` with `retry_after` set to the next attempt time. Once a Step exhausts its `maxAttempts` (default 3), the Run is `failed`; it is only re-queued by an explicit retry (`POST /api/runs/:id/retry`).
 
 **Determinism constraint**
 A Function handler must execute the same Steps in the same order on every attempt of a Run. Step outputs are memoized by call order; if the handler branches differently on a retry, the wrong memoized output will be fed to the wrong Step. Enforced at runtime by the **Step journal**, and checked in tests by the Test runner.
@@ -35,25 +35,29 @@ The Step keys a Run has requested, in order, stored on the Run. Every replay is 
 **Handler version**
 An optional `version` string declared on a Function and stored on each Run at creation. A Run resumed under a different version is treated as a version mismatch before its handler runs. Used for changes the Step journal cannot detect.
 
+**Concurrency limit**
+`concurrency` on a Function caps how many of its Runs are executing (`"running"`) at once, across all workers. `concurrency: n` is one bucket for the whole Function; `{ limit, key: "data.userId" }` gives each distinct value of that event field its own bucket (missing values share one). The bucket is fixed on the Run when it is dispatched. Runs that are sleeping, waiting or retrying do not hold a slot.
+
 **StepperFunction**
 The canonical TypeScript type name for a defined Function (avoids collision with the JS built-in `Function`). Created via `defineFunction()`. Parameterised as `StepperFunction<TData, TError, TRequirements>` where `TRequirements` is the Effect service layer the handler needs.
 
-**Worker**
-Runs in the same process as the Hono server by default (`createApp({ worker: true })`). Can be separated via `createWorker()` for independent deployment. Executes up to `concurrency` (default 10) Runs simultaneously. On startup, re-queues all Runs in `"running"` state (crash recovery).
-
 **retry_after**
-A nullable timestamp column on `runs`. A Run with `status = "pending"` or `"retrying"` and a future `retry_after` is not eligible for pickup until that time passes. Set on re-queue according to the Function's `retryDelay` schedule, defaulting to exponential backoff with jitter.
+A nullable timestamp column on `runs`. A Run with `status = "pending"` or `"retrying"` and a future `retry_after` is not eligible for pickup until that time passes. Set by `step.sleep` (wake time) and by Step retry backoff (next attempt time). For a `"waiting"` Run it holds the `step.waitForEvent` timeout; a waiting Run is only eligible for pickup once that timeout has passed.
 
 **Run statuses**
-- `pending` — queued for first attempt, never executed
+- `pending` — queued for pickup (first attempt, or parked after a Step completed)
 - `running` — currently being executed by a worker
-- `retrying` — failed at least once; waiting for `retry_after` before next attempt
-- `completed` — all steps finished successfully
-- `failed` — a Step exhausted its `maxAttempts`; terminal, never re-queued
-- `cancelled` — explicitly cancelled via `POST /api/runs/:id/cancel`; only `pending` and `retrying` runs can be cancelled
+- `retrying` — parked until `retry_after`: a Step failed with attempts remaining, or the handler is in `step.sleep`
+- `waiting` — parked in `step.waitForEvent` until a matching Event arrives or the wait times out (see **Waiting run**)
+- `completed` — the handler finished successfully
+- `failed` — a Step exhausted its `maxAttempts` or the handler failed; terminal until explicitly retried via `POST /api/runs/:id/retry`
+- `cancelled` — explicitly cancelled via `POST /api/runs/:id/cancel`; only `pending`, `retrying` and `waiting` Runs can be cancelled
+
+**Waiting run**
+A Run parked by `step.waitForEvent(name, { event, match?, timeout?, onTimeout? })`. Its `waiting_for` column stores the Event name, a `match` filter (dotted `event.data` paths mapped to required values) and the timeout. A dispatched Event that matches resumes the Run; the Event becomes the wait Step's output. On timeout the Step resolves `null`, or fails if `onTimeout: "throw"`. The dashboard's run detail shows what a waiting Run is waiting for.
 
 **Event schema**
-An optional Effect `Schema` declared on a `StepperFunction` for its event's `data` payload. Validated server-side before a Run is created; events that fail validation for a given function are silently skipped for that function (logged), not rejected globally. Multiple functions may handle the same event name with different schemas.
+An optional validator declared on a `StepperFunction` as `schema`: any object with a `parse(data)` that throws on invalid input (Zod, ArkType, Valibot wrappers, ...). Checked in `dispatchEvent` before anything is persisted; if any matching Function rejects the data, the whole Event is rejected (`POST /api/events` returns `400` with the issues) and no Runs are created. Multiple functions may handle the same event name with different schemas.
 
 **App layer**
 A single Effect `Layer` provided to the shared config that satisfies the union of all registered Functions' `R` type requirements. All functions share this layer. `createApp` is generic over `R` — the TypeScript compiler enforces that the provided `layer` satisfies every function's requirements at compile time.
@@ -68,7 +72,7 @@ A plain object `{ functions, layer, storageLayer }` that can be passed to both `
 `step.sleep(name, duration)` — a named, memoized pause. On first execution: records the step as completed, sets the Run's `retry_after = now + duration`, sets status to `"retrying"`, and aborts further handler execution. On subsequent execution: step is already completed; handler continues past it immediately. Sleep steps survive process restarts because the `retry_after` timestamp is persisted.
 
 **Event idempotency**
-`POST /api/events` is idempotent on `event.id`. A duplicate `id` returns the original response with no new Runs created. Callers are responsible for generating unique IDs; the server enforces the deduplication contract.
+`POST /api/events` is idempotent on `event.id`. A duplicate `id` returns the original response with no new Runs created, and does not resume `waiting` Runs a second time. This holds even for Events that trigger no Functions. Callers are responsible for generating unique IDs; the server enforces the deduplication contract.
 
 **Dashboard auth**
 `STEPPER_DASHBOARD_TOKEN` environment variable. All API calls from the dashboard include it as a bearer token. The server rejects requests without a valid token with `401`. Both the server and dashboard must be started with the same token value.
@@ -79,11 +83,14 @@ Multiple worker processes may run against the same database. `SELECT ... FOR UPD
 **Drain**
 Graceful shutdown behaviour on `SIGTERM`: the server stops accepting new events; the worker waits for all currently-executing (`"running"`) Runs to finish before the process exits. Sleeping/retrying Runs are not drained — they resume on the next worker startup. Documented as a deploy constraint: sleeping Runs will be picked up by the new code version.
 
+**Event replay**
+Re-sending a stored Event's `name` and `data` under a new `id` (`POST /api/events/:id/replay`, or "Replay event" in the dashboard's events browser). It creates fresh Runs for the current Functions; the original Event and its Runs are untouched.
+
+**Live updates**
+The server relays run changes to dashboards over SSE (`GET /api/stream`). Workers `NOTIFY` the `stepper_run_updates` channel (payload: run id) when they claim or finish a Run, and the API does the same on cancel/retry; the server `LISTEN`s and broadcasts `run.updated` messages. The dashboard proxies the stream through its own `/api/stream` route so the bearer token never reaches the browser.
+
 **Event dispatch response**
 `POST /api/events` returns `{ id: string, runs: Array<{ runId: string, functionName: string }> }` — the caller receives the IDs of every Run created, enabling programmatic status tracking without a second query.
-
-**Test runner**
-`createTestRunner(fn: StepperFunction)` — a test helper that executes a Function against `InMemoryStorageLive` and returns `{ run, steps }` for assertions. Lives in `@integration-stepper/core` as a subpath export `@integration-stepper/core/testing`.
 
 **Typed client**
 `createClient<typeof functions>({ serverUrl })` — infers valid event names and their `data` shapes from a functions array at compile time. A wrong event name or mismatched `data` shape is a compile error.
@@ -95,4 +102,4 @@ Actively executing (`"running"`) Runs are drained before deploy via graceful shu
 `createApp` returns `{ app, shutdown: () => Promise<void> }`. Calling `shutdown()` (or receiving SIGTERM) stops event ingestion and waits for all `"running"` Runs to complete before the process exits.
 
 **Test runner**
-`import { createTestRunner } from "@integration-stepper/core/testing"`. Executes a Function against `InMemoryStorageLive` and returns `{ run, steps }` for assertions. Not included in production bundles via subpath export.
+`createTestRunner(fn, layer)`, imported from the subpath `@integration-stepper/core/testing` so it stays out of production bundles. Executes a Function against `InMemoryStorageLive`, replaying until the Run settles, and returns `{ run, steps }` for assertions. Fails with `NonDeterministicHandlerError` if the handler's Step sequence changes between replay passes.
