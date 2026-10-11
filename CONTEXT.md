@@ -63,7 +63,7 @@ A plain object `{ functions, layer, storageLayer }` that can be passed to both `
 `step.sleep(name, duration)` — a named, memoized pause. On first execution: records the step as completed, sets the Run's `retry_after = now + duration`, sets status to `"retrying"`, and aborts further handler execution. On subsequent execution: step is already completed; handler continues past it immediately. Sleep steps survive process restarts because the `retry_after` timestamp is persisted.
 
 **Event idempotency**
-`POST /api/events` is idempotent on `event.id`. A duplicate `id` returns the original response with no new Runs created. Callers are responsible for generating unique IDs; the server enforces the deduplication contract.
+`POST /api/events` is idempotent on `event.id`. A duplicate `id` returns the original response with no new Runs created, and does not resume `waiting` Runs a second time. This holds even for Events that trigger no Functions. Callers are responsible for generating unique IDs; the server enforces the deduplication contract.
 
 **Dashboard auth**
 `STEPPER_DASHBOARD_TOKEN` environment variable. All API calls from the dashboard include it as a bearer token. The server rejects requests without a valid token with `401`. Both the server and dashboard must be started with the same token value.

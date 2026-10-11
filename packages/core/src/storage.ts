@@ -15,16 +15,17 @@ export interface Storage {
   /**
    * Atomically persist an event together with all runs created for it.
    * Either everything is stored or nothing is; a failure leaves no orphan event or partial runs.
+   * Returns false, storing nothing, if an event with the same id already exists.
    */
   readonly saveEventWithRuns: (
     event: EventPayload,
     runs: ReadonlyArray<RunRecord>,
-  ) => Effect.Effect<void, StorageError>
+  ) => Effect.Effect<boolean, StorageError>
 
   readonly createRun: (run: RunRecord) => Effect.Effect<void, StorageError>
   readonly updateRun: (
     id: string,
-    patch: Partial<Pick<RunRecord, "status" | "completedAt" | "error" | "retryAfter" | "waitingFor">>,
+    patch: Partial<Pick<RunRecord, "status" | "completedAt" | "error" | "retryAfter" | "waitingFor" | "output">>,
   ) => Effect.Effect<void, StorageError>
   /**
    * Atomically apply `patch` only if the run's current status is in `from`.
@@ -33,7 +34,7 @@ export interface Storage {
   readonly transitionRun: (
     id: string,
     from: ReadonlyArray<RunStatus>,
-    patch: Partial<Pick<RunRecord, "status" | "completedAt" | "error" | "retryAfter">>,
+    patch: Partial<Pick<RunRecord, "status" | "completedAt" | "error" | "retryAfter" | "waitingFor" | "output">>,
   ) => Effect.Effect<boolean, StorageError>
   readonly getRun: (id: string) => Effect.Effect<Option.Option<RunRecord>, StorageError>
   readonly listRuns: (opts?: {
@@ -99,12 +100,14 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
 
     saveEventWithRuns: (event, newRuns) =>
       wrap(() => {
+        if (events.has(event.id)) return false
         // Validate first so a failure cannot leave partial state behind.
         for (const r of newRuns) {
           if (runs.has(r.id)) throw new Error(`Run already exists: ${r.id}`)
         }
         events.set(event.id, event)
         for (const r of newRuns) runs.set(r.id, r)
+        return true
       }),
 
     createRun: (run) => wrap(() => { runs.set(run.id, run) }),
@@ -122,6 +125,7 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
           error: patch.error !== undefined ? patch.error : existing.error,
           retryAfter: patch.retryAfter !== undefined ? patch.retryAfter : existing.retryAfter,
           waitingFor: patch.waitingFor !== undefined ? patch.waitingFor : existing.waitingFor,
+          output: patch.output !== undefined ? patch.output : existing.output,
         })
       }),
     transitionRun: (id, from, patch) =>

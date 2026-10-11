@@ -1,7 +1,7 @@
 import { Hono, type Context } from "hono"
 import { sql } from "drizzle-orm"
 import { Effect, Layer, Option, Schema } from "effect"
-import { Storage, RunStatus } from "@integration-stepper/core"
+import { notifyInvoker, Storage, RunStatus } from "@integration-stepper/core"
 import type { RunRecord, StepRecord } from "@integration-stepper/core"
 import type { ServerEnv } from "../types.js"
 import { notifyRunUpdate } from "../run-updates.js"
@@ -95,7 +95,19 @@ const cancelOne = (runId: string) =>
   Effect.gen(function* () {
     const storage = yield* Storage
     // Single atomic conditional UPDATE: avoids the check-then-update race with workers.
-    return yield* storage.transitionRun(runId, ["pending", "retrying", "waiting"], { status: "cancelled" })
+    const cancelled = yield* storage.transitionRun(runId, ["pending", "retrying", "waiting"], { status: "cancelled" })
+    if (cancelled) {
+      // A run started by step.invoke: let the invoking run fail its step instead of waiting forever
+      const run = yield* storage.getRun(runId)
+      if (Option.isSome(run)) {
+        yield* notifyInvoker(runId, run.value.eventId, run.value.functionName, {
+          status: "cancelled",
+          output: null,
+          error: "cancelled",
+        })
+      }
+    }
+    return cancelled
   })
 
 const retryOne = (runId: string) =>
@@ -245,7 +257,7 @@ const bulkApply = async (
   return c.json({ affected: result.value }, 200)
 }
 
-runsRouter.post("/bulk-cancel", (c) => bulkApply(c, ["pending", "retrying"], cancelOne))
+runsRouter.post("/bulk-cancel", (c) => bulkApply(c, ["pending", "retrying", "waiting"], cancelOne))
 
 runsRouter.post("/bulk-retry", async (c) => {
   const res = await bulkApply(c, ["failed"], retryOne)
@@ -262,6 +274,7 @@ export const serializeRun = (run: RunRecord) => ({
   completedAt: Option.getOrNull(run.completedAt)?.toISOString() ?? null,
   retryAfter: Option.getOrNull(run.retryAfter)?.toISOString() ?? null,
   error: Option.getOrNull(run.error),
+  output: Option.getOrNull(run.output),
   waitingFor: Option.match(run.waitingFor, {
     onNone: () => null,
     onSome: (w) => ({

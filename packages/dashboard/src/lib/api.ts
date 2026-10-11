@@ -39,12 +39,16 @@ export interface StepSummary {
 }
 
 export interface RunDetail extends RunSummary {
+  /** The handler's return value; null until the run completes (or if it returned nothing). */
+  output: unknown
   steps: StepSummary[]
 }
 
 export interface IntegrationSummary {
   name: string
-  event: string
+  /** Exactly one of `event` / `cron` is set. */
+  event: string | null
+  cron: string | null
   concurrency: number
 }
 

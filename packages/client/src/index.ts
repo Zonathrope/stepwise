@@ -3,7 +3,7 @@ import type { StepperFunction } from "@integration-stepper/core"
 export type { StepperFunction }
 
 export type InferEventMap<Fns extends readonly StepperFunction<any, any, any>[]> = {
-  [K in Fns[number] as K["event"]]: K extends StepperFunction<infer D, any, any> ? D : never
+  [K in Fns[number] as K["event"] & string]: K extends StepperFunction<infer D, any, any> ? D : never
 }
 
 export interface SendEventResult {

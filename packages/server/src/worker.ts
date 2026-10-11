@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import { executeRun, Registry, Storage } from "@integration-stepper/core"
+import { dispatchCronTicks, executeRun, Registry, Storage } from "@integration-stepper/core"
 import { sql, inArray } from "drizzle-orm"
 import * as schema from "./db/schema.js"
 import type { Db } from "./db/client.js"
@@ -9,6 +9,12 @@ import { notifyRunUpdate } from "./run-updates.js"
 const ADVISORY_LOCK_ID = 1234567890
 const NOTIFY_CHANNEL = "stepper_runs"
 const POLL_INTERVAL_MS = 5000
+const CRON_INTERVAL_MS = 5000
+/**
+ * On startup, also fire cron ticks from this far back, so a tick that fell inside a restart
+ * (e.g. a rolling deploy) is not lost. Ticks already fired by another worker are deduplicated.
+ */
+const CRON_STARTUP_LOOKBACK_MS = 60_000
 
 /** Default max concurrent runs per worker when `concurrency` is omitted. */
 export const DEFAULT_CONCURRENCY = 5
@@ -31,6 +37,8 @@ export class Worker {
   private readonly inFlightPerFunction = new Map<string, number>()
   private shutdownResolve: (() => void) | null = null
   private pollTimer: ReturnType<typeof setTimeout> | null = null
+  private cronTimer: ReturnType<typeof setTimeout> | null = null
+  private lastCronCheck = new Date(Date.now() - CRON_STARTUP_LOOKBACK_MS)
   private listenSql: ReturnType<typeof postgres> | null = null
 
   constructor(opts: WorkerOptions) {
@@ -45,6 +53,8 @@ export class Worker {
     await this.warnRetryingRuns()
     await this.setupListen()
     this.schedulePoll()
+    await this.cronCycle()
+    this.scheduleCron()
     await this.pickupCycle()
   }
 
@@ -54,6 +64,11 @@ export class Worker {
     if (this.pollTimer !== null) {
       clearTimeout(this.pollTimer)
       this.pollTimer = null
+    }
+
+    if (this.cronTimer !== null) {
+      clearTimeout(this.cronTimer)
+      this.cronTimer = null
     }
 
     if (this.listenSql !== null) {
@@ -165,6 +180,42 @@ export class Worker {
         void this.pickupCycle().then(() => this.schedulePoll())
       }
     }, POLL_INTERVAL_MS)
+  }
+
+  private scheduleCron(): void {
+    if (this.shuttingDown) return
+    this.cronTimer = setTimeout(() => {
+      if (!this.shuttingDown) {
+        void this.cronCycle().then(() => this.scheduleCron())
+      }
+    }, CRON_INTERVAL_MS)
+  }
+
+  /**
+   * Create runs for cron ticks since the last check. Every worker does this; deterministic
+   * per-tick event/run ids make the dispatch idempotent, so each tick fires exactly once.
+   */
+  private async cronCycle(): Promise<void> {
+    if (this.shuttingDown) return
+    const to = new Date()
+    const result = await Effect.runPromiseExit(
+      dispatchCronTicks(this.lastCronCheck, to).pipe(
+        Effect.provide(Layer.mergeAll(this.storageLayer, this.registryLayer)),
+      ),
+    )
+    if (result._tag === "Failure") {
+      // Keep lastCronCheck so the window is retried on the next cycle
+      console.error("[worker] Cron dispatch failed:", result.cause)
+      return
+    }
+    this.lastCronCheck = to
+    if (result.value.length > 0) {
+      console.log(
+        "[worker] Scheduled cron runs:",
+        result.value.map((r) => ({ runId: r.runId, functionName: r.functionName, scheduledAt: r.scheduledAt.toISOString() })),
+      )
+      await this.pickupCycle()
+    }
   }
 
   private async pickupCycle(): Promise<void> {

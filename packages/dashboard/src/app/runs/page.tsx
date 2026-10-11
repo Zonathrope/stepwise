@@ -71,7 +71,7 @@ export default async function RunsPage({
           </p>
         </div>
         <div className="flex items-center gap-3">
-          {(params.status === "pending" || params.status === "retrying") && runs.length > 0 && (
+          {(params.status === "pending" || params.status === "retrying" || params.status === "waiting") && runs.length > 0 && (
             <form action={bulkAction.bind(null, "bulk-cancel", params.status, params.functionName ?? "")}>
               <button
                 type="submit"

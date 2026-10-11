@@ -100,6 +100,18 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
         )}
       </div>
 
+      {/* Run output */}
+      {run.output !== null && run.output !== undefined && (
+        <section className="border border-zinc-800 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 bg-zinc-900/50 border-b border-zinc-800">
+            <h2 className="text-xs font-medium text-zinc-500 uppercase tracking-wide">Output</h2>
+          </div>
+          <pre className="p-4 text-xs text-zinc-300 overflow-x-auto font-mono leading-relaxed">
+            {JSON.stringify(run.output, null, 2)}
+          </pre>
+        </section>
+      )}
+
       {/* What a waiting run is parked on */}
       {run.status === "waiting" && run.waitingFor && (
         <section className="border border-sky-900/50 rounded-lg overflow-hidden">

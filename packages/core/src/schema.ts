@@ -40,6 +40,11 @@ export const WaitingFor = Schema.Struct({
   match: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
   timeoutAt: Schema.NullOr(Schema.DateFromSelf),
   onTimeout: Schema.Literal("null", "throw"),
+  /**
+   * Id of the exact event that will resolve this wait, when known in advance (step.invoke).
+   * If it already exists when the run parks, the executor resumes the run immediately.
+   */
+  resultEventId: Schema.optional(Schema.String),
 })
 export type WaitingFor = typeof WaitingFor.Type
 
@@ -53,5 +58,7 @@ export const RunRecord = Schema.Struct({
   error: Schema.OptionFromNullOr(Schema.String),
   retryAfter: Schema.OptionFromNullOr(Schema.DateFromSelf),
   waitingFor: Schema.OptionFromNullOr(WaitingFor),
+  /** The handler's return value, set when the run completes. */
+  output: Schema.OptionFromNullOr(Schema.Unknown),
 })
 export type RunRecord = typeof RunRecord.Type
