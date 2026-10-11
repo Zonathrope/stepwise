@@ -4,6 +4,7 @@ import type { EventPayload, WaitingFor } from "./schema.js"
 import { Storage } from "./storage.js"
 import { Registry } from "./registry.js"
 import { makeStepContext } from "./step-context.js"
+import { runConcurrencyFor } from "./concurrency.js"
 import { RunNotFoundError, StepperPark, ValidationError, type ValidationIssue } from "./errors.js"
 
 const isStepperPark = (e: unknown): e is StepperPark =>
@@ -168,6 +169,7 @@ export const dispatchEvent = (event: EventPayload) =>
       error: Option.none<string>(),
       retryAfter: Option.none<Date>(),
       waitingFor: Option.none<WaitingFor>(),
+      concurrency: Option.fromNullable(runConcurrencyFor(fn.name, fn.concurrency, event)),
     }))
 
     // Event and all runs are persisted atomically

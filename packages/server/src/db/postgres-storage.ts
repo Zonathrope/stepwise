@@ -36,6 +36,10 @@ const toRunRecord = (row: typeof schema.runs.$inferSelect): RunRecord => ({
   retryAfter: Option.fromNullable(row.retryAfter),
   error: Option.fromNullable(row.error),
   waitingFor: deserializeWaitingFor(row.waitingFor),
+  concurrency:
+    row.concurrencyKey !== null && row.concurrencyLimit !== null
+      ? Option.some({ key: row.concurrencyKey, limit: row.concurrencyLimit })
+      : Option.none(),
 })
 
 const toStepRecord = (row: typeof schema.steps.$inferSelect): StepRecord => ({
@@ -101,6 +105,8 @@ export const PostgresStorageLive = (db: Db) =>
                     onNone: () => null,
                     onSome: serializeWaitingFor,
                   }),
+                  concurrencyKey: Option.getOrNull(run.concurrency)?.key ?? null,
+                  concurrencyLimit: Option.getOrNull(run.concurrency)?.limit ?? null,
                 })),
               )
             }),
@@ -123,6 +129,8 @@ export const PostgresStorageLive = (db: Db) =>
                 onNone: () => null,
                 onSome: serializeWaitingFor,
               }),
+              concurrencyKey: Option.getOrNull(run.concurrency)?.key ?? null,
+              concurrencyLimit: Option.getOrNull(run.concurrency)?.limit ?? null,
             }),
           catch: toStorageError,
         }),

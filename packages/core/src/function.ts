@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import type { StepContext } from "./step-context.js"
 import type { EventPayload } from "./schema.js"
 import type { StepperPark } from "./errors.js"
+import { validateConcurrency, type ConcurrencyOption } from "./concurrency.js"
 
 export interface FunctionHandler<TData, TError, TRequirements> {
   (
@@ -19,11 +20,18 @@ export interface StepperFunction<TData = unknown, TError = never, TRequirements 
   readonly name: string
   readonly event: string
   readonly handler: FunctionHandler<TData, TError, TRequirements>
-  readonly concurrency?: number
+  /**
+   * Max runs of this function executing at once, across all workers. Use
+   * `{ limit, key: "data.userId" }` to apply the limit per value of an event field instead.
+   */
+  readonly concurrency?: ConcurrencyOption
   /** Optional validator for `event.data`; checked in `dispatchEvent` before any run is created. */
   readonly schema?: EventSchema<TData>
 }
 
 export const defineFunction = <TData = unknown, TError = never, TRequirements = never>(
   def: StepperFunction<TData, TError, TRequirements>,
-): StepperFunction<TData, TError, TRequirements> => def
+): StepperFunction<TData, TError, TRequirements> => {
+  validateConcurrency(def.name, def.concurrency)
+  return def
+}

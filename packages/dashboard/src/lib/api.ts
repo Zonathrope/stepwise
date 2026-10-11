@@ -38,7 +38,9 @@ export interface RunDetail extends RunSummary {
 export interface IntegrationSummary {
   name: string
   event: string
-  concurrency: number
+  /** Max executing runs (per key value when `concurrencyKey` is set); null = unlimited. */
+  concurrency: number | null
+  concurrencyKey: string | null
 }
 
 export async function getRuns(opts?: {

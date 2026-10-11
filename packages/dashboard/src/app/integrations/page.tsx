@@ -44,8 +44,8 @@ export default async function IntegrationsPage() {
                       </div>
                     </div>
                     <div className="text-xs text-zinc-500 flex-shrink-0 text-right">
-                      <div className="text-zinc-400 font-medium">{i.concurrency}</div>
-                      <div>concurrency</div>
+                      <div className="text-zinc-400 font-medium">{i.concurrency ?? "∞"}</div>
+                      <div>{i.concurrencyKey ? <>concurrency per <code className="font-mono">{i.concurrencyKey}</code></> : "concurrency"}</div>
                     </div>
                   </div>
 

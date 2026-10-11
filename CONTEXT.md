@@ -29,6 +29,9 @@ The delay before a failed Run is re-queued. Configurable per Function via a `ret
 **Determinism constraint**
 A Function handler must execute the same Steps in the same order on every attempt of a Run. Step outputs are memoized by call order; if the handler branches differently on a retry, the wrong memoized output will be fed to the wrong Step. This constraint is documented, not enforced at runtime.
 
+**Concurrency limit**
+`concurrency` on a Function caps how many of its Runs are executing (`"running"`) at once, across all workers. `concurrency: n` is one bucket for the whole Function; `{ limit, key: "data.userId" }` gives each distinct value of that event field its own bucket (missing values share one). The bucket is fixed on the Run when it is dispatched. Runs that are sleeping, waiting or retrying do not hold a slot.
+
 **StepperFunction**
 The canonical TypeScript type name for a defined Function (avoids collision with the JS built-in `Function`). Created via `defineFunction()`. Parameterised as `StepperFunction<TData, TError, TRequirements>` where `TRequirements` is the Effect service layer the handler needs.
 

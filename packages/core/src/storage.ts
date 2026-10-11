@@ -107,6 +107,7 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
           error: patch.error !== undefined ? patch.error : existing.error,
           retryAfter: patch.retryAfter !== undefined ? patch.retryAfter : existing.retryAfter,
           waitingFor: patch.waitingFor !== undefined ? patch.waitingFor : existing.waitingFor,
+          concurrency: existing.concurrency,
         })
       }),
     transitionRun: (id, from, patch) =>

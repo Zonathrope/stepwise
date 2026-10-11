@@ -21,6 +21,8 @@ export const runs = pgTable("runs", {
   retryAfter: timestamp("retry_after", { withTimezone: true }),
   error: text("error"),
   waitingFor: jsonb("waiting_for"),
+  concurrencyKey: text("concurrency_key"),
+  concurrencyLimit: integer("concurrency_limit"),
 })
 
 export const steps = pgTable("steps", {
