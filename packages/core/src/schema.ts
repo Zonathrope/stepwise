@@ -40,6 +40,11 @@ export const WaitingFor = Schema.Struct({
   match: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
   timeoutAt: Schema.NullOr(Schema.DateFromSelf),
   onTimeout: Schema.Literal("null", "throw"),
+  /**
+   * Id of the exact event that will resolve this wait, when known in advance (step.invoke).
+   * If it already exists when the run parks, the executor resumes the run immediately.
+   */
+  resultEventId: Schema.optional(Schema.String),
 })
 export type WaitingFor = typeof WaitingFor.Type
 
