@@ -88,7 +88,7 @@ Hono app wired to Postgres via Drizzle, plus the async worker.
 - `db/postgres-storage.ts` — `Storage` implementation; `listRuns` with `eligibleForPickup` uses `FOR UPDATE SKIP LOCKED`-friendly filter
 - `db/migrations/0000_initial.sql` — apply once with `psql $DATABASE_URL -f ...`
 - `app.ts` — `createApp<R>(opts)` returns `{ app, shutdown }`; auth middleware reads `STEPPER_DASHBOARD_TOKEN`; starts `Worker` internally unless `worker: false`
-- `worker.ts` — `Worker` class: LISTEN/NOTIFY on `"stepper_runs"` + 5s poll fallback; advisory lock for crash recovery on startup; per-function concurrency tracking
+- `worker.ts` — `Worker` class: LISTEN/NOTIFY on `"stepper_runs"` + 5s poll fallback; per-function concurrency tracking; worker leases: a claim sets `claimed_by` (worker id) and `heartbeat_at`, the worker refreshes `heartbeat_at` on its running runs every `heartbeatIntervalMs` (10s), and every worker (at startup and on the same cadence) re-queues `running` runs whose heartbeat is older than `staleAfterMs` (60s) or missing. Migration `0007_worker_heartbeats.sql`. Integration test `worker-heartbeat.test.ts` (rolling restart + killed worker process; runs only with `DATABASE_URL`)
 - `worker-factory.ts` — `createWorker(config)` for running the worker in a separate process
 - `sse.ts` — `SseBroadcaster` fan-out
 - `bin.ts` — standalone entry; wires SIGTERM/SIGINT to `shutdown()`

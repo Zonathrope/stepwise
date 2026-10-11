@@ -21,6 +21,10 @@ export const runs = pgTable("runs", {
   retryAfter: timestamp("retry_after", { withTimezone: true }),
   error: text("error"),
   waitingFor: jsonb("waiting_for"),
+  /** Worker currently executing this run (set at claim). */
+  claimedBy: text("claimed_by"),
+  /** Last heartbeat from `claimedBy`; a running run with a stale heartbeat is re-queued. */
+  heartbeatAt: timestamp("heartbeat_at", { withTimezone: true }),
 })
 
 export const steps = pgTable("steps", {

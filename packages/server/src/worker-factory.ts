@@ -14,6 +14,9 @@ export const createWorker = <R>(
     db: Db
     registryLayer: Layer.Layer<Registry>
     concurrency?: number
+    workerId?: string
+    heartbeatIntervalMs?: number
+    staleAfterMs?: number
   },
 ): Worker => {
   return new Worker({
@@ -21,5 +24,8 @@ export const createWorker = <R>(
     storageLayer: config.storageLayer,
     registryLayer: config.registryLayer,
     ...(config.concurrency !== undefined ? { concurrency: config.concurrency } : {}),
+    ...(config.workerId !== undefined ? { workerId: config.workerId } : {}),
+    ...(config.heartbeatIntervalMs !== undefined ? { heartbeatIntervalMs: config.heartbeatIntervalMs } : {}),
+    ...(config.staleAfterMs !== undefined ? { staleAfterMs: config.staleAfterMs } : {}),
   })
 }

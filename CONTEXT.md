@@ -33,7 +33,7 @@ A Function handler must execute the same Steps in the same order on every attemp
 The canonical TypeScript type name for a defined Function (avoids collision with the JS built-in `Function`). Created via `defineFunction()`. Parameterised as `StepperFunction<TData, TError, TRequirements>` where `TRequirements` is the Effect service layer the handler needs.
 
 **Worker**
-Runs in the same process as the Hono server by default (`createApp({ worker: true })`). Can be separated via `createWorker()` for independent deployment. Executes up to `concurrency` (default 10) Runs simultaneously. On startup, re-queues all Runs in `"running"` state (crash recovery).
+Runs in the same process as the Hono server by default (`createApp({ worker: true })`). Can be separated via `createWorker()` for independent deployment. Executes up to `concurrency` (default 5) Runs simultaneously. Holds a lease on each Run it executes (see **Worker heartbeat**).
 
 **retry_after**
 A nullable timestamp column on `runs`. A Run with `status = "pending"` or `"retrying"` and a future `retry_after` is not eligible for pickup until that time passes. Set on re-queue according to the Function's `retryDelay` schedule, defaulting to exponential backoff with jitter.
@@ -68,7 +68,10 @@ A plain object `{ functions, layer, storageLayer }` that can be passed to both `
 `STEPPER_DASHBOARD_TOKEN` environment variable. All API calls from the dashboard include it as a bearer token. The server rejects requests without a valid token with `401`. Both the server and dashboard must be started with the same token value.
 
 **Multi-worker safety**
-Multiple worker processes may run against the same database. `SELECT ... FOR UPDATE SKIP LOCKED` prevents double-execution of Runs. Startup crash-recovery re-queuing is guarded by a Postgres advisory lock so only one worker re-queues stuck Runs during simultaneous restarts.
+Multiple worker processes may run against the same database. `SELECT ... FOR UPDATE SKIP LOCKED` prevents double-execution of Runs. Crash recovery only re-queues Runs whose worker stopped heartbeating, so a worker restarting during a rolling deploy never re-queues Runs another live worker is executing.
+
+**Worker heartbeat**
+When a worker claims a Run it records itself in `claimed_by` and sets `heartbeat_at`; while executing it refreshes `heartbeat_at` every 10s. Any worker, at startup and periodically, re-queues `"running"` Runs whose heartbeat is older than 60s (or missing, for Runs claimed by pre-heartbeat workers): their worker crashed or hung. A worker that is merely slow is protected as long as its heartbeats continue.
 
 **Drain**
 Graceful shutdown behaviour on `SIGTERM`: the server stops accepting new events; the worker waits for all currently-executing (`"running"`) Runs to finish before the process exits. Sleeping/retrying Runs are not drained — they resume on the next worker startup. Documented as a deploy constraint: sleeping Runs will be picked up by the new code version.
