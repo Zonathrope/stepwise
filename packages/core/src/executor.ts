@@ -5,7 +5,12 @@ import type { CronEventData } from "./function.js"
 import { cronTicksBetween, parseCron } from "./cron.js"
 import { Storage } from "./storage.js"
 import { Registry } from "./registry.js"
-import { makeStepContext } from "./step-context.js"
+import {
+  INVOKE_RESULT_EVENT,
+  invokeResultEventId,
+  makeStepContext,
+  type InvokeResultData,
+} from "./step-context.js"
 import { RunNotFoundError, StepperPark, ValidationError, type ValidationIssue } from "./errors.js"
 
 const isStepperPark = (e: unknown): e is StepperPark =>
@@ -30,7 +35,7 @@ export const executeRun = (runId: string) =>
 
     yield* storage.updateRun(runId, { status: "running" })
 
-    const stepContext = makeStepContext(runId, storage)
+    const stepContext = makeStepContext(runId, storage, { registry })
 
     type Outcome =
       | { _tag: "completed"; output: unknown }
@@ -63,6 +68,12 @@ export const executeRun = (runId: string) =>
           retryAfter: Option.fromNullable(waitingFor.timeoutAt),
           waitingFor: Option.some(waitingFor),
         })
+        // The awaited event may have landed before the run was parked (e.g. an invoked run
+        // that finished first). Whoever writes second sees the other, so no wake-up is lost.
+        if (waitingFor.resultEventId !== undefined) {
+          const ready = yield* storage.getEvent(waitingFor.resultEventId)
+          if (Option.isSome(ready)) yield* storage.resumeWaitingRun(runId, waitingFor.stepName, ready.value)
+        }
       } else {
         // step-completed: park back to pending for next pickup
         yield* storage.updateRun(runId, {
@@ -78,6 +89,11 @@ export const executeRun = (runId: string) =>
         waitingFor: Option.none(),
         output: Option.fromNullable(outcome.output),
       })
+      yield* notifyInvoker(run.id, run.eventId, fn.name, {
+        status: "completed",
+        output: outcome.output ?? null,
+        error: null,
+      })
     } else {
       // Conditional transition: only the execution that actually moves the run to "failed"
       // (not one that lost a race with a cancel) invokes onFailure, so it fires once per failure.
@@ -87,6 +103,13 @@ export const executeRun = (runId: string) =>
         error: Option.some(String(outcome.error)),
         waitingFor: Option.none(),
       })
+      if (failed) {
+        yield* notifyInvoker(run.id, run.eventId, fn.name, {
+          status: "failed",
+          output: null,
+          error: String(outcome.error),
+        })
+      }
       if (failed && fn.onFailure) {
         yield* Effect.suspend(() =>
           fn.onFailure!({ runId, functionName: fn.name, event, error: outcome.error }),
@@ -97,6 +120,26 @@ export const executeRun = (runId: string) =>
         )
       }
     }
+  })
+
+/**
+ * If `runId` was started by `step.invoke`, report its terminal result to the invoking run:
+ * store an `invoke/result` event (deterministic id, so repeats are no-ops) and resume the
+ * parent if it is already waiting. Call after the run reached a terminal status.
+ */
+export const notifyInvoker = (
+  runId: string,
+  eventId: string,
+  functionName: string,
+  result: Pick<InvokeResultData, "status" | "output" | "error">,
+) =>
+  Effect.gen(function* () {
+    if (!eventId.startsWith("invoke:")) return
+    const storage = yield* Storage
+    const data: InvokeResultData = { childRunId: runId, functionName, ...result }
+    const event: EventPayload = { id: invokeResultEventId(runId), name: INVOKE_RESULT_EVENT, data, timestamp: new Date() }
+    if (Option.isNone(yield* storage.getEvent(event.id))) yield* storage.saveEvent(event)
+    yield* resumeWaitingRuns(event)
   })
 
 const getPath = (value: unknown, path: string): unknown => {
