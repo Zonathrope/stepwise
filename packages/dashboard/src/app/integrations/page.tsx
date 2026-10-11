@@ -39,13 +39,13 @@ export default async function IntegrationsPage() {
                     <div>
                       <h2 className="font-medium text-zinc-100">{i.name}</h2>
                       <div className="flex items-center gap-2 mt-2">
-                        <span className="text-xs text-zinc-500">triggers on</span>
-                        <code className="text-xs text-indigo-300 bg-indigo-950/50 border border-indigo-900/40 px-2 py-0.5 rounded">{i.event}</code>
+                        <span className="text-xs text-zinc-500">{i.cron ? "runs on schedule" : "triggers on"}</span>
+                        <code className="text-xs text-indigo-300 bg-indigo-950/50 border border-indigo-900/40 px-2 py-0.5 rounded">{i.cron ?? i.event}</code>
                       </div>
                     </div>
                     <div className="text-xs text-zinc-500 flex-shrink-0 text-right">
-                      <div className="text-zinc-400 font-medium">{i.concurrency}</div>
-                      <div>concurrency</div>
+                      <div className="text-zinc-400 font-medium">{i.concurrency ?? "∞"}</div>
+                      <div>{i.concurrencyKey ? <>concurrency per <code className="font-mono">{i.concurrencyKey}</code></> : "concurrency"}</div>
                     </div>
                   </div>
 

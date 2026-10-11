@@ -2,7 +2,7 @@ import { getRuns, getIntegrations } from "@/lib/api"
 import { relativeTime, duration } from "@/lib/utils"
 import { statusTextColor, statusDotColor, statusChip } from "@/lib/status-styles"
 
-const STATUSES = ["running", "pending", "retrying", "completed", "failed"] as const
+const STATUSES = ["running", "pending", "retrying", "waiting", "completed", "failed"] as const
 
 export default async function OverviewPage() {
   const [allRuns, integrations] = await Promise.all([
@@ -21,7 +21,7 @@ export default async function OverviewPage() {
     <div className="space-y-8">
 
       {/* Status summary */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
         {STATUSES.map((status) => (
           <a key={status} href={`/runs?status=${status}`} className="group bg-zinc-900 border border-zinc-800 hover:border-zinc-600 rounded-lg p-4 transition-colors">
             <div className={`text-2xl font-bold tabular-nums ${statusTextColor(status)}`}>
@@ -83,8 +83,8 @@ export default async function OverviewPage() {
                 className="block bg-zinc-900 border border-zinc-800 hover:border-zinc-600 rounded-lg p-4 transition-colors">
                 <div className="text-sm font-medium text-zinc-100">{i.name}</div>
                 <div className="flex items-center gap-3 mt-1.5">
-                  <span className="text-xs text-zinc-500">on</span>
-                  <code className="text-xs text-indigo-300 bg-indigo-950/50 px-1.5 py-0.5 rounded">{i.event}</code>
+                  <span className="text-xs text-zinc-500">{i.cron ? "cron" : "on"}</span>
+                  <code className="text-xs text-indigo-300 bg-indigo-950/50 px-1.5 py-0.5 rounded">{i.cron ?? i.event}</code>
                 </div>
               </a>
             ))}

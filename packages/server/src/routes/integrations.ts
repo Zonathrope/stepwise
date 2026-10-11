@@ -1,6 +1,6 @@
 import { Hono } from "hono"
 import { Effect } from "effect"
-import { Registry } from "@integration-stepper/core"
+import { normalizeConcurrency, Registry } from "@integration-stepper/core"
 import type { ServerEnv } from "../types.js"
 
 export const integrationsRouter = new Hono<ServerEnv>()
@@ -20,10 +20,16 @@ integrationsRouter.get("/", async (c) => {
   }
 
   return c.json(
-    result.value.map((f: { name: string; event: string; concurrency?: number }) => ({
-      name: f.name,
-      event: f.event,
-      concurrency: f.concurrency ?? 1,
-    })),
+    result.value.map((f) => {
+      const concurrency = normalizeConcurrency(f.concurrency)
+      return {
+        name: f.name,
+        event: f.event ?? null,
+        cron: f.cron ?? null,
+        // null = unlimited (bounded only by worker slots)
+        concurrency: concurrency?.limit ?? null,
+        concurrencyKey: concurrency?.key ?? null,
+      }
+    }),
   )
 })

@@ -36,6 +36,13 @@ const toRunRecord = (row: typeof schema.runs.$inferSelect): RunRecord => ({
   retryAfter: Option.fromNullable(row.retryAfter),
   error: Option.fromNullable(row.error),
   waitingFor: deserializeWaitingFor(row.waitingFor),
+  handlerVersion: Option.fromNullable(row.handlerVersion),
+  stepJournal: row.stepJournal ?? [],
+  concurrency:
+    row.concurrencyKey !== null && row.concurrencyLimit !== null
+      ? Option.some({ key: row.concurrencyKey, limit: row.concurrencyLimit })
+      : Option.none(),
+  output: Option.fromNullable(row.output),
 })
 
 const toStepRecord = (row: typeof schema.steps.$inferSelect): StepRecord => ({
@@ -76,17 +83,32 @@ export const PostgresStorageLive = (db: Db) =>
           catch: toStorageError,
         }),
 
+      listEvents: (opts) =>
+        Effect.tryPromise({
+          try: async () => {
+            const base = db.select().from(schema.events)
+            const rows = await (opts?.name ? base.where(eq(schema.events.name, opts.name)) : base)
+              .orderBy(desc(schema.events.timestamp))
+              .limit(opts?.limit ?? 50)
+              .offset(opts?.offset ?? 0)
+            return rows.map(toEventPayload)
+          },
+          catch: toStorageError,
+        }),
+
       saveEventWithRuns: (event, newRuns) =>
         Effect.tryPromise({
           try: () =>
             db.transaction(async (tx) => {
-              await tx.insert(schema.events).values({
+              const inserted = await tx.insert(schema.events).values({
                 id: event.id,
                 name: event.name,
                 data: event.data,
                 timestamp: event.timestamp,
-              }).onConflictDoNothing()
-              if (newRuns.length === 0) return
+              }).onConflictDoNothing().returning({ id: schema.events.id })
+              // Duplicate event id: the original event and its runs stand
+              if (inserted.length === 0) return false
+              if (newRuns.length === 0) return true
               await tx.insert(schema.runs).values(
                 newRuns.map((run) => ({
                   id: run.id,
@@ -101,8 +123,14 @@ export const PostgresStorageLive = (db: Db) =>
                     onNone: () => null,
                     onSome: serializeWaitingFor,
                   }),
+                  handlerVersion: Option.getOrNull(run.handlerVersion),
+                  stepJournal: [...run.stepJournal],
+                  concurrencyKey: Option.getOrNull(run.concurrency)?.key ?? null,
+                  concurrencyLimit: Option.getOrNull(run.concurrency)?.limit ?? null,
+                  output: Option.getOrNull(run.output),
                 })),
               )
+              return true
             }),
           catch: toStorageError,
         }),
@@ -123,6 +151,11 @@ export const PostgresStorageLive = (db: Db) =>
                 onNone: () => null,
                 onSome: serializeWaitingFor,
               }),
+              handlerVersion: Option.getOrNull(run.handlerVersion),
+              stepJournal: [...run.stepJournal],
+              concurrencyKey: Option.getOrNull(run.concurrency)?.key ?? null,
+              concurrencyLimit: Option.getOrNull(run.concurrency)?.limit ?? null,
+              output: Option.getOrNull(run.output),
             }),
           catch: toStorageError,
         }),
@@ -141,6 +174,8 @@ export const PostgresStorageLive = (db: Db) =>
                   onSome: serializeWaitingFor,
                 }),
               }),
+              ...(patch.stepJournal !== undefined && { stepJournal: [...patch.stepJournal] }),
+              ...(patch.output !== undefined && { output: Option.getOrNull(patch.output) }),
             }).where(eq(schema.runs.id, id)),
           catch: toStorageError,
         }),
@@ -153,6 +188,14 @@ export const PostgresStorageLive = (db: Db) =>
               ...(patch.completedAt !== undefined && { completedAt: Option.getOrNull(patch.completedAt) }),
               ...(patch.retryAfter !== undefined && { retryAfter: Option.getOrNull(patch.retryAfter) }),
               ...(patch.error !== undefined && { error: Option.getOrNull(patch.error) }),
+              ...(patch.waitingFor !== undefined && {
+                waitingFor: Option.match(patch.waitingFor, {
+                  onNone: () => null,
+                  onSome: serializeWaitingFor,
+                }),
+              }),
+              ...(patch.output !== undefined && { output: Option.getOrNull(patch.output) }),
+              ...(patch.stepJournal !== undefined && { stepJournal: [...patch.stepJournal] }),
             }
             const rows = await db
               .update(schema.runs)
@@ -244,6 +287,9 @@ export const PostgresStorageLive = (db: Db) =>
             const conditions = []
             if (opts?.functionName) {
               conditions.push(eq(schema.runs.integrationName, opts.functionName))
+            }
+            if (opts?.eventId) {
+              conditions.push(eq(schema.runs.eventId, opts.eventId))
             }
             if (opts?.status) {
               conditions.push(eq(schema.runs.status, opts.status))

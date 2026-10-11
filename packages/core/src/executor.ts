@@ -1,14 +1,44 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { Effect, Option } from "effect"
-import type { EventPayload, WaitingFor } from "./schema.js"
+import type { EventPayload, RunRecord, WaitingFor } from "./schema.js"
+import type { CronEventData } from "./function.js"
+import { cronTicksBetween, parseCron } from "./cron.js"
 import { Storage } from "./storage.js"
 import { Registry } from "./registry.js"
-import { makeStepContext } from "./step-context.js"
-import { RunNotFoundError, StepperPark, ValidationError, type ValidationIssue } from "./errors.js"
+import {
+  INVOKE_RESULT_EVENT,
+  invokeResultEventId,
+  makeStepContext,
+  type InvokeResultData,
+} from "./step-context.js"
+import { runConcurrencyFor } from "./concurrency.js"
+import {
+  HandlerVersionMismatchError,
+  RunNotFoundError,
+  StepError,
+  StepperPark,
+  ValidationError,
+  type ValidationIssue,
+} from "./errors.js"
+import { StepJournal } from "./journal.js"
 
 const isStepperPark = (e: unknown): e is StepperPark =>
   e instanceof StepperPark ||
   (typeof e === "object" && e !== null && "_tag" in e && (e as { _tag: unknown })._tag === "StepperPark")
+
+/** Human-readable error for the run record (a bare `String(error)` loses tagged errors' details). */
+export const describeRunError = (error: unknown): string => {
+  if (error instanceof StepError) {
+    const cause = error.cause instanceof Error ? error.cause.message : String(error.cause)
+    return `StepError: step "${error.stepName}" failed (attempt ${error.attempt}): ${cause}`
+  }
+  if (error instanceof Error) {
+    const tag = (error as { _tag?: unknown })._tag
+    const name = typeof tag === "string" ? tag : error.name
+    return error.message ? `${name}: ${error.message}` : name
+  }
+  return String(error)
+}
 
 export const executeRun = (runId: string) =>
   Effect.gen(function* () {
@@ -28,16 +58,36 @@ export const executeRun = (runId: string) =>
 
     yield* storage.updateRun(runId, { status: "running" })
 
-    const stepContext = makeStepContext(runId, storage)
+    const policy = fn.onVersionMismatch ?? "fail"
+    const runVersion = Option.getOrNull(run.handlerVersion)
+    const fnVersion = fn.version ?? null
+    // A declared-version mismatch under "fail" fails the run without running the handler,
+    // through the same terminal-failure path as any other error (onFailure, invoker notify)
+    let preFailure: HandlerVersionMismatchError | null = null
+    if (runVersion !== fnVersion) {
+      const mismatch = new HandlerVersionMismatchError({
+        functionName: fn.name,
+        runId,
+        reason: "version",
+        detail: `run was created by version ${JSON.stringify(runVersion)}, current handler is ${JSON.stringify(fnVersion)}`,
+      })
+      if (policy === "fail") preFailure = mismatch
+      else yield* Effect.logWarning(mismatch.message)
+    }
+
+    const journal = new StepJournal(run.stepJournal, fn.name, runId, policy)
+    const stepContext = makeStepContext(runId, storage, { registry, journal })
 
     type Outcome =
-      | { _tag: "completed" }
+      | { _tag: "completed"; output: unknown }
       | { _tag: "parked"; park: StepperPark }
       | { _tag: "failed"; error: unknown }
 
     // Run the handler, distinguishing StepperPark (park signal) from real errors
-    const outcome: Outcome = yield* fn.handler(event, stepContext).pipe(
-      Effect.map((): Outcome => ({ _tag: "completed" })),
+    const outcome: Outcome = preFailure ? { _tag: "failed", error: preFailure } : yield* fn.handler(event, stepContext).pipe(
+      // Returning early, before steps the run already recorded, is a divergence too
+      Effect.zipLeft(journal.checkComplete()),
+      Effect.map((output): Outcome => ({ _tag: "completed", output })),
       Effect.catchAll((error): Effect.Effect<Outcome> => {
         if (isStepperPark(error)) {
           return Effect.succeed({ _tag: "parked", park: error })
@@ -46,6 +96,9 @@ export const executeRun = (runId: string) =>
       }),
     )
 
+    // Persist newly recorded step keys along with whatever the outcome writes
+    const journalPatch = journal.updated ? { stepJournal: journal.updated } : {}
+
     if (outcome._tag === "parked") {
       const park = outcome.park
       if (park.reason === "sleep" || park.reason === "step-retry") {
@@ -53,6 +106,7 @@ export const executeRun = (runId: string) =>
           status: "retrying",
           retryAfter: Option.some(park.retryAfter!),
           waitingFor: Option.none(),
+          ...journalPatch,
         })
       } else if (park.reason === "wait") {
         const waitingFor = park.waitingFor!
@@ -60,13 +114,21 @@ export const executeRun = (runId: string) =>
           status: "waiting",
           retryAfter: Option.fromNullable(waitingFor.timeoutAt),
           waitingFor: Option.some(waitingFor),
+          ...journalPatch,
         })
+        // The awaited event may have landed before the run was parked (e.g. an invoked run
+        // that finished first). Whoever writes second sees the other, so no wake-up is lost.
+        if (waitingFor.resultEventId !== undefined) {
+          const ready = yield* storage.getEvent(waitingFor.resultEventId)
+          if (Option.isSome(ready)) yield* storage.resumeWaitingRun(runId, waitingFor.stepName, ready.value)
+        }
       } else {
         // step-completed: park back to pending for next pickup
         yield* storage.updateRun(runId, {
           status: "pending",
           retryAfter: Option.none(),
           waitingFor: Option.none(),
+          ...journalPatch,
         })
       }
     } else if (outcome._tag === "completed") {
@@ -74,15 +136,61 @@ export const executeRun = (runId: string) =>
         status: "completed",
         completedAt: Option.some(new Date()),
         waitingFor: Option.none(),
+        ...journalPatch,
+        output: Option.fromNullable(outcome.output),
+      })
+      yield* notifyInvoker(run.id, run.eventId, fn.name, {
+        status: "completed",
+        output: outcome.output ?? null,
+        error: null,
       })
     } else {
-      yield* storage.updateRun(runId, {
+      // Conditional transition: only the execution that actually moves the run to "failed"
+      // (not one that lost a race with a cancel) invokes onFailure, so it fires once per failure.
+      const failed = yield* storage.transitionRun(runId, ["running"], {
         status: "failed",
         completedAt: Option.some(new Date()),
-        error: Option.some(String(outcome.error)),
+        error: Option.some(describeRunError(outcome.error)),
         waitingFor: Option.none(),
+        ...journalPatch,
       })
+      if (failed) {
+        yield* notifyInvoker(run.id, run.eventId, fn.name, {
+          status: "failed",
+          output: null,
+          error: describeRunError(outcome.error),
+        })
+      }
+      if (failed && fn.onFailure) {
+        yield* Effect.suspend(() =>
+          fn.onFailure!({ runId, functionName: fn.name, event, error: outcome.error }),
+        ).pipe(
+          Effect.catchAllCause((cause) =>
+            Effect.logError(`onFailure handler for "${fn.name}" failed (run ${runId})`, cause),
+          ),
+        )
+      }
     }
+  })
+
+/**
+ * If `runId` was started by `step.invoke`, report its terminal result to the invoking run:
+ * store an `invoke/result` event (deterministic id, so repeats are no-ops) and resume the
+ * parent if it is already waiting. Call after the run reached a terminal status.
+ */
+export const notifyInvoker = (
+  runId: string,
+  eventId: string,
+  functionName: string,
+  result: Pick<InvokeResultData, "status" | "output" | "error">,
+) =>
+  Effect.gen(function* () {
+    if (!eventId.startsWith("invoke:")) return
+    const storage = yield* Storage
+    const data: InvokeResultData = { childRunId: runId, functionName, ...result }
+    const event: EventPayload = { id: invokeResultEventId(runId), name: INVOKE_RESULT_EVENT, data, timestamp: new Date() }
+    if (Option.isNone(yield* storage.getEvent(event.id))) yield* storage.saveEvent(event)
+    yield* resumeWaitingRuns(event)
   })
 
 const getPath = (value: unknown, path: string): unknown => {
@@ -168,13 +276,86 @@ export const dispatchEvent = (event: EventPayload) =>
       error: Option.none<string>(),
       retryAfter: Option.none<Date>(),
       waitingFor: Option.none<WaitingFor>(),
+      handlerVersion: Option.fromNullable(fn.version),
+      stepJournal: [],
+      concurrency: Option.fromNullable(runConcurrencyFor(fn.name, fn.concurrency, event)),
+      output: Option.none<unknown>(),
     }))
 
     // Event and all runs are persisted atomically
-    yield* storage.saveEventWithRuns(event, runs)
+    const inserted = yield* storage.saveEventWithRuns(event, runs)
+
+    // Duplicate event id: return the original runs and don't wake waiting runs a second time
+    if (!inserted) {
+      const existing = yield* storage.listRuns({ eventId: event.id })
+      return existing.map((r) => ({ runId: r.id, functionName: r.functionName }))
+    }
 
     // Wake any runs parked in step.waitForEvent that this event satisfies
     yield* resumeWaitingRuns(event)
 
     return runs.map((r) => ({ runId: r.id, functionName: r.functionName }))
+  })
+
+/** Deterministic id of the event representing one cron tick of one function. */
+export const cronEventId = (functionName: string, tick: Date) => `cron:${functionName}:${tick.toISOString()}`
+
+/** Format the first 16 bytes of a sha256 digest as a UUID, so derived ids look like generated ones. */
+const deterministicUuid = (seed: string) => {
+  const h = createHash("sha256").update(seed).digest("hex")
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`
+}
+
+/**
+ * Create runs for every cron tick in `(from, to]` of every cron-triggered function.
+ *
+ * Safe to call concurrently from several workers over overlapping windows: each tick maps to a
+ * deterministic event id and run id, so only the first writer persists it. Later writers see the
+ * stored event (saveEventWithRuns returns false for an existing event id, or a racing insert
+ * fails and the event is then found) and skip the tick.
+ * Returns only the runs this call created.
+ */
+export const dispatchCronTicks = (from: Date, to: Date) =>
+  Effect.gen(function* () {
+    const storage = yield* Storage
+    const registry = yield* Registry
+    const created: Array<{ runId: string; functionName: string; scheduledAt: Date }> = []
+
+    for (const fn of registry.listCron()) {
+      const cron = fn.cron!
+      for (const tick of cronTicksBetween(parseCron(cron), from, to)) {
+        const eventId = cronEventId(fn.name, tick)
+        if (Option.isSome(yield* storage.getEvent(eventId))) continue
+
+        const data: CronEventData = { cron, scheduledAt: tick.toISOString() }
+        const event: EventPayload = { id: eventId, name: `cron/${fn.name}`, data, timestamp: tick }
+        const run: RunRecord = {
+          id: deterministicUuid(eventId),
+          functionName: fn.name,
+          eventId,
+          status: "pending",
+          startedAt: new Date(),
+          completedAt: Option.none(),
+          error: Option.none(),
+          retryAfter: Option.none(),
+          waitingFor: Option.none(),
+          output: Option.none(),
+          concurrency: Option.fromNullable(runConcurrencyFor(fn.name, fn.concurrency, event)),
+          handlerVersion: Option.fromNullable(fn.version),
+          stepJournal: [],
+        }
+
+        // false: the event already existed (another worker fired this tick), nothing was inserted
+        const inserted = yield* storage.saveEventWithRuns(event, [run]).pipe(
+          Effect.catchTag("StorageError", (err) =>
+            // Another worker won the race for this tick: its event is now visible
+            storage.getEvent(eventId).pipe(
+              Effect.flatMap((existing) => (Option.isSome(existing) ? Effect.succeed(false) : Effect.fail(err))),
+            ),
+          ),
+        )
+        if (inserted) created.push({ runId: run.id, functionName: fn.name, scheduledAt: tick })
+      }
+    }
+    return created
   })
