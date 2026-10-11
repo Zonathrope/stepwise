@@ -81,7 +81,7 @@ Key files:
 
 **Run output / onFailure**: the handler's success value is stored as `RunRecord.output` when the run completes (null if it returns nothing; should be JSON-serialisable). On a terminal failure `executeRun` moves the run `running → failed` with `transitionRun`, and only if that transition wins (not cancelled meanwhile) calls `fn.onFailure({ runId, functionName, event, error })`; errors from `onFailure` are logged and swallowed. Migration `0003_run_output.sql`.
 
-**Cron triggers**: `defineFunction({ name, cron: "0 * * * *", handler })` (UTC). Every worker calls `dispatchCronTicks` every 5s (and over the last 60s on startup). Each tick gets a deterministic event id (`cron:<fn>:<ISO tick>`) and run id, so concurrent workers can't double-fire: the loser either sees the stored event or hits a primary-key conflict on the atomic event+run insert and skips. Cron runs receive `event.data = { cron, scheduledAt }`. Ticks missed while no worker is running (beyond the 60s lookback) are not backfilled.
+**Cron triggers**: `defineFunction({ name, cron: "0 * * * *", handler })` (UTC). Every worker calls `dispatchCronTicks` every 5s (and over the last 60s on startup). Each tick gets a deterministic event id (`cron:<fn>:<ISO tick>`) and run id, so concurrent workers can't double-fire: `saveEventWithRuns` inserts nothing for an event id that already exists (event idempotency), and a racing insert that still fails is re-checked and skipped. Cron runs receive `event.data = { cron, scheduledAt }`. Ticks missed while no worker is running (beyond the 60s lookback) are not backfilled.
 
 **`step.parallel`**: runs a group of `step.run`-style bodies concurrently (keys assigned in declaration order before anything runs). Each is memoised/retried independently; the run parks once after the group (or once with the latest retry time), not once per step.
 
@@ -107,6 +107,7 @@ HTTP API:
 - `GET /api/runs` — filterable by `functionName`, `status`, `limit`, `offset`
 - `GET /api/runs/:id` — run detail with step list; includes `retryAfter` and `output`
 - `POST /api/runs/:id/cancel` — cancels `pending`/`retrying`/`waiting` runs; `409` if already running/completed/failed
+- `POST /api/runs/bulk-cancel` / `bulk-retry` — `{ filter: { status?, functionName? } }`; bulk-cancel accepts `pending`/`retrying`/`waiting`
 - `GET /api/integrations` — lists registered functions (`event` or `cron`, the other is null)
 - `GET /api/stream` — SSE for live updates
 - `GET /health`

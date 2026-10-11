@@ -229,7 +229,13 @@ export const dispatchEvent = (event: EventPayload) =>
     }))
 
     // Event and all runs are persisted atomically
-    yield* storage.saveEventWithRuns(event, runs)
+    const inserted = yield* storage.saveEventWithRuns(event, runs)
+
+    // Duplicate event id: return the original runs and don't wake waiting runs a second time
+    if (!inserted) {
+      const existing = yield* storage.listRuns({ eventId: event.id })
+      return existing.map((r) => ({ runId: r.id, functionName: r.functionName }))
+    }
 
     // Wake any runs parked in step.waitForEvent that this event satisfies
     yield* resumeWaitingRuns(event)
@@ -251,7 +257,8 @@ const deterministicUuid = (seed: string) => {
  *
  * Safe to call concurrently from several workers over overlapping windows: each tick maps to a
  * deterministic event id and run id, so only the first writer persists it. Later writers see the
- * stored event (or a primary-key conflict on the atomic event+run insert) and skip the tick.
+ * stored event (saveEventWithRuns returns false for an existing event id, or a racing insert
+ * fails and the event is then found) and skip the tick.
  * Returns only the runs this call created.
  */
 export const dispatchCronTicks = (from: Date, to: Date) =>
@@ -281,8 +288,8 @@ export const dispatchCronTicks = (from: Date, to: Date) =>
           output: Option.none(),
         }
 
+        // false: the event already existed (another worker fired this tick), nothing was inserted
         const inserted = yield* storage.saveEventWithRuns(event, [run]).pipe(
-          Effect.as(true),
           Effect.catchTag("StorageError", (err) =>
             // Another worker won the race for this tick: its event is now visible
             storage.getEvent(eventId).pipe(

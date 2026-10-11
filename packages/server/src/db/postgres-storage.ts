@@ -81,13 +81,15 @@ export const PostgresStorageLive = (db: Db) =>
         Effect.tryPromise({
           try: () =>
             db.transaction(async (tx) => {
-              await tx.insert(schema.events).values({
+              const inserted = await tx.insert(schema.events).values({
                 id: event.id,
                 name: event.name,
                 data: event.data,
                 timestamp: event.timestamp,
-              }).onConflictDoNothing()
-              if (newRuns.length === 0) return
+              }).onConflictDoNothing().returning({ id: schema.events.id })
+              // Duplicate event id: the original event and its runs stand
+              if (inserted.length === 0) return false
+              if (newRuns.length === 0) return true
               await tx.insert(schema.runs).values(
                 newRuns.map((run) => ({
                   id: run.id,
@@ -105,6 +107,7 @@ export const PostgresStorageLive = (db: Db) =>
                   output: Option.getOrNull(run.output),
                 })),
               )
+              return true
             }),
           catch: toStorageError,
         }),
