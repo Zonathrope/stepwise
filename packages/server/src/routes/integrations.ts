@@ -24,7 +24,8 @@ integrationsRouter.get("/", async (c) => {
       const concurrency = normalizeConcurrency(f.concurrency)
       return {
         name: f.name,
-        event: f.event,
+        event: f.event ?? null,
+        cron: f.cron ?? null,
         // null = unlimited (bounded only by worker slots)
         concurrency: concurrency?.limit ?? null,
         concurrencyKey: concurrency?.key ?? null,

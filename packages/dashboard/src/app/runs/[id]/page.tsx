@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache"
 import { relativeTime, duration, absoluteTime } from "@/lib/utils"
 import { statusBadge, stepTextColor } from "@/lib/status-styles"
 import { Check, X, Pause, Loader, Minus, Circle, Clock } from "lucide-react"
+import { LiveRefresh } from "@/components/live-refresh"
 
 const SERVER_URL = process.env["SERVER_URL"] ?? process.env["NEXT_PUBLIC_SERVER_URL"] ?? "http://localhost:4000"
 
@@ -61,6 +62,7 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
               {totalDuration && (
                 <span className="text-zinc-500 text-sm">· {totalDuration}</span>
               )}
+              <LiveRefresh runId={run.id} />
             </div>
           </div>
           {canCancel && (
@@ -97,6 +99,56 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
           </div>
         )}
       </div>
+
+      {/* Run output */}
+      {run.output !== null && run.output !== undefined && (
+        <section className="border border-zinc-800 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 bg-zinc-900/50 border-b border-zinc-800">
+            <h2 className="text-xs font-medium text-zinc-500 uppercase tracking-wide">Output</h2>
+          </div>
+          <pre className="p-4 text-xs text-zinc-300 overflow-x-auto font-mono leading-relaxed">
+            {JSON.stringify(run.output, null, 2)}
+          </pre>
+        </section>
+      )}
+
+      {/* What a waiting run is parked on */}
+      {run.status === "waiting" && run.waitingFor && (
+        <section className="border border-sky-900/50 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 bg-sky-950/30 border-b border-sky-900/50">
+            <h2 className="text-xs font-medium text-sky-300 uppercase tracking-wide">Waiting for event</h2>
+          </div>
+          <dl className="divide-y divide-zinc-800/60">
+            <div className="flex items-center gap-6 px-4 py-2.5">
+              <dt className="text-xs text-zinc-500 w-24 flex-shrink-0">Event</dt>
+              <dd><code className="text-xs text-indigo-300 bg-indigo-950/50 px-1.5 py-0.5 rounded">{run.waitingFor.event}</code></dd>
+            </div>
+            <div className="flex items-start gap-6 px-4 py-2.5">
+              <dt className="text-xs text-zinc-500 w-24 flex-shrink-0">Match</dt>
+              <dd className="text-xs text-zinc-300 font-mono min-w-0">
+                {run.waitingFor.match && Object.keys(run.waitingFor.match).length > 0 ? (
+                  <pre className="overflow-x-auto">{JSON.stringify(run.waitingFor.match, null, 2)}</pre>
+                ) : (
+                  <span className="text-zinc-500">any event with this name</span>
+                )}
+              </dd>
+            </div>
+            <div className="flex items-center gap-6 px-4 py-2.5">
+              <dt className="text-xs text-zinc-500 w-24 flex-shrink-0">Timeout</dt>
+              <dd className="text-xs text-zinc-300">
+                {run.waitingFor.timeoutAt ? (
+                  <span>
+                    {absoluteTime(run.waitingFor.timeoutAt)} ({relativeTime(run.waitingFor.timeoutAt)}), then{" "}
+                    {run.waitingFor.onTimeout === "throw" ? "fails the step" : "resumes with null"}
+                  </span>
+                ) : (
+                  <span className="text-zinc-500">none (waits indefinitely)</span>
+                )}
+              </dd>
+            </div>
+          </dl>
+        </section>
+      )}
 
       {/* Step timeline */}
       <section>

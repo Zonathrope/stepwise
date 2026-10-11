@@ -1,15 +1,17 @@
 export function relativeTime(date: string | Date): string {
   const d = typeof date === "string" ? new Date(date) : date
   const diff = Date.now() - d.getTime()
-  const s = Math.floor(diff / 1000)
-  if (s < 5) return "just now"
-  if (s < 60) return `${s}s ago`
+  // Future dates (e.g. a wait timeout) read as "in 5m"
+  const fmt = (n: string) => (diff < 0 ? `in ${n}` : `${n} ago`)
+  const s = Math.floor(Math.abs(diff) / 1000)
+  if (s < 5) return diff < 0 ? "in a moment" : "just now"
+  if (s < 60) return fmt(`${s}s`)
   const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
+  if (m < 60) return fmt(`${m}m`)
   const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
+  if (h < 24) return fmt(`${h}h`)
   const day = Math.floor(h / 24)
-  return `${day}d ago`
+  return fmt(`${day}d`)
 }
 
 export function duration(start: string | Date, end: string | Date): string {

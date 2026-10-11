@@ -23,6 +23,7 @@ export const runs = pgTable("runs", {
   waitingFor: jsonb("waiting_for"),
   concurrencyKey: text("concurrency_key"),
   concurrencyLimit: integer("concurrency_limit"),
+  output: jsonb("output").$type<unknown>(),
 })
 
 export const steps = pgTable("steps", {

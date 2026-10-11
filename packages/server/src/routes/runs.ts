@@ -1,9 +1,10 @@
 import { Hono, type Context } from "hono"
 import { sql } from "drizzle-orm"
 import { Effect, Layer, Option, Schema } from "effect"
-import { Storage, RunStatus } from "@integration-stepper/core"
+import { notifyInvoker, Storage, RunStatus } from "@integration-stepper/core"
 import type { RunRecord, StepRecord } from "@integration-stepper/core"
 import type { ServerEnv } from "../types.js"
+import { notifyRunUpdate } from "../run-updates.js"
 
 export const runsRouter = new Hono<ServerEnv>()
 
@@ -94,7 +95,19 @@ const cancelOne = (runId: string) =>
   Effect.gen(function* () {
     const storage = yield* Storage
     // Single atomic conditional UPDATE: avoids the check-then-update race with workers.
-    return yield* storage.transitionRun(runId, ["pending", "retrying", "waiting"], { status: "cancelled" })
+    const cancelled = yield* storage.transitionRun(runId, ["pending", "retrying", "waiting"], { status: "cancelled" })
+    if (cancelled) {
+      // A run started by step.invoke: let the invoking run fail its step instead of waiting forever
+      const run = yield* storage.getRun(runId)
+      if (Option.isSome(run)) {
+        yield* notifyInvoker(runId, run.value.eventId, run.value.functionName, {
+          status: "cancelled",
+          output: null,
+          error: "cancelled",
+        })
+      }
+    }
+    return cancelled
   })
 
 const retryOne = (runId: string) =>
@@ -151,7 +164,10 @@ runsRouter.post("/:id/cancel", async (c) => {
   }
 
   const outcome = result.value
-  if (outcome.ok) return c.json({ ok: true }, 200)
+  if (outcome.ok) {
+    await notifyRunUpdate(c.get("db"), runId)
+    return c.json({ ok: true }, 200)
+  }
   if (outcome.notFound) return c.json({ error: "Run not found" }, 404)
   return c.json({ error: `Run cannot be cancelled in status ${outcome.status}` }, 409)
 })
@@ -179,6 +195,7 @@ runsRouter.post("/:id/retry", async (c) => {
   const outcome = result.value
   if (outcome.ok) {
     await notifyWorker(c)
+    await notifyRunUpdate(c.get("db"), runId)
     return c.json({ ok: true }, 200)
   }
   if (outcome.notFound) return c.json({ error: "Run not found" }, 404)
@@ -236,10 +253,11 @@ const bulkApply = async (
   if (result._tag === "Failure") {
     return c.json({ error: "Bulk operation failed" }, 500)
   }
+  if (result.value > 0) await notifyRunUpdate(c.get("db"))
   return c.json({ affected: result.value }, 200)
 }
 
-runsRouter.post("/bulk-cancel", (c) => bulkApply(c, ["pending", "retrying"], cancelOne))
+runsRouter.post("/bulk-cancel", (c) => bulkApply(c, ["pending", "retrying", "waiting"], cancelOne))
 
 runsRouter.post("/bulk-retry", async (c) => {
   const res = await bulkApply(c, ["failed"], retryOne)
@@ -247,7 +265,7 @@ runsRouter.post("/bulk-retry", async (c) => {
   return res
 })
 
-const serializeRun = (run: RunRecord) => ({
+export const serializeRun = (run: RunRecord) => ({
   id: run.id,
   functionName: run.functionName,
   eventId: run.eventId,
@@ -256,6 +274,7 @@ const serializeRun = (run: RunRecord) => ({
   completedAt: Option.getOrNull(run.completedAt)?.toISOString() ?? null,
   retryAfter: Option.getOrNull(run.retryAfter)?.toISOString() ?? null,
   error: Option.getOrNull(run.error),
+  output: Option.getOrNull(run.output),
   waitingFor: Option.match(run.waitingFor, {
     onNone: () => null,
     onSome: (w) => ({

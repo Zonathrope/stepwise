@@ -12,6 +12,7 @@ test("renders Prometheus text format", () => {
   assert.match(text, /^# TYPE stepper_runs_total gauge$/m)
   assert.match(text, /^stepper_runs_total\{status="completed"\} 3$/m)
   assert.match(text, /^stepper_runs_total\{status="failed"\} 0$/m)
+  assert.match(text, /^stepper_runs_total\{status="waiting"\} 0$/m)
   assert.match(text, /^stepper_runs_duration_seconds\{function="a\\"b",quantile="0.95"\} 2$/m)
   assert.match(text, /^stepper_runs_duration_seconds_count\{function="a\\"b"\} 3$/m)
   assert.match(text, /^stepper_worker_active_runs 2$/m)
