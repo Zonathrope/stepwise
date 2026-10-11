@@ -239,7 +239,7 @@ const bulkApply = async (
   return c.json({ affected: result.value }, 200)
 }
 
-runsRouter.post("/bulk-cancel", (c) => bulkApply(c, ["pending", "retrying"], cancelOne))
+runsRouter.post("/bulk-cancel", (c) => bulkApply(c, ["pending", "retrying", "waiting"], cancelOne))
 
 runsRouter.post("/bulk-retry", async (c) => {
   const res = await bulkApply(c, ["failed"], retryOne)

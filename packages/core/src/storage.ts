@@ -9,11 +9,12 @@ export interface Storage {
   /**
    * Atomically persist an event together with all runs created for it.
    * Either everything is stored or nothing is; a failure leaves no orphan event or partial runs.
+   * Returns false, storing nothing, if an event with the same id already exists.
    */
   readonly saveEventWithRuns: (
     event: EventPayload,
     runs: ReadonlyArray<RunRecord>,
-  ) => Effect.Effect<void, StorageError>
+  ) => Effect.Effect<boolean, StorageError>
 
   readonly createRun: (run: RunRecord) => Effect.Effect<void, StorageError>
   readonly updateRun: (
@@ -84,12 +85,14 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
 
     saveEventWithRuns: (event, newRuns) =>
       wrap(() => {
+        if (events.has(event.id)) return false
         // Validate first so a failure cannot leave partial state behind.
         for (const r of newRuns) {
           if (runs.has(r.id)) throw new Error(`Run already exists: ${r.id}`)
         }
         events.set(event.id, event)
         for (const r of newRuns) runs.set(r.id, r)
+        return true
       }),
 
     createRun: (run) => wrap(() => { runs.set(run.id, run) }),

@@ -171,7 +171,13 @@ export const dispatchEvent = (event: EventPayload) =>
     }))
 
     // Event and all runs are persisted atomically
-    yield* storage.saveEventWithRuns(event, runs)
+    const inserted = yield* storage.saveEventWithRuns(event, runs)
+
+    // Duplicate event id: return the original runs and don't wake waiting runs a second time
+    if (!inserted) {
+      const existing = yield* storage.listRuns({ eventId: event.id })
+      return existing.map((r) => ({ runId: r.id, functionName: r.functionName }))
+    }
 
     // Wake any runs parked in step.waitForEvent that this event satisfies
     yield* resumeWaitingRuns(event)
