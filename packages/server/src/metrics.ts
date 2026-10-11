@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm"
 import type { Db } from "./db/client.js"
 
-export const RUN_STATUSES = ["pending", "running", "retrying", "completed", "failed", "cancelled"] as const
+export const RUN_STATUSES = ["pending", "running", "retrying", "waiting", "completed", "failed", "cancelled"] as const
 export const QUANTILES = [0.5, 0.95, 0.99] as const
 /** Duration quantiles are computed over runs that finished within this window. */
 export const DURATION_WINDOW_SECONDS = 3600

@@ -27,15 +27,18 @@ eventsRouter.post("/", async (c) => {
     timestamp: new Date(),
   }
 
-  // Check idempotency: if runs already exist for this event id, return existing
+  // Check idempotency: if this event id was already stored, return its runs (possibly none).
+  // dispatchEvent repeats this check atomically, so a concurrent duplicate is still a no-op.
   const existingCheck = await Effect.runPromiseExit(
     Effect.gen(function* () {
       const storage = yield* Storage
+      const existing = yield* storage.getEvent(eventId)
+      if (Option.isNone(existing)) return null
       return yield* storage.listRuns({ eventId })
     }).pipe(Effect.provide(storageLayer)),
   )
 
-  if (existingCheck._tag === "Success" && existingCheck.value.length > 0) {
+  if (existingCheck._tag === "Success" && existingCheck.value !== null) {
     const runs = existingCheck.value.map((r) => ({ runId: r.id, functionName: r.functionName }))
     return c.json({ id: eventId, runs }, 200)
   }
