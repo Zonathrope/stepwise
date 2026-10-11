@@ -36,6 +36,7 @@ const toRunRecord = (row: typeof schema.runs.$inferSelect): RunRecord => ({
   retryAfter: Option.fromNullable(row.retryAfter),
   error: Option.fromNullable(row.error),
   waitingFor: deserializeWaitingFor(row.waitingFor),
+  output: Option.fromNullable(row.output),
 })
 
 const toStepRecord = (row: typeof schema.steps.$inferSelect): StepRecord => ({
@@ -103,6 +104,7 @@ export const PostgresStorageLive = (db: Db) =>
                     onNone: () => null,
                     onSome: serializeWaitingFor,
                   }),
+                  output: Option.getOrNull(run.output),
                 })),
               )
               return true
@@ -126,6 +128,7 @@ export const PostgresStorageLive = (db: Db) =>
                 onNone: () => null,
                 onSome: serializeWaitingFor,
               }),
+              output: Option.getOrNull(run.output),
             }),
           catch: toStorageError,
         }),
@@ -144,6 +147,7 @@ export const PostgresStorageLive = (db: Db) =>
                   onSome: serializeWaitingFor,
                 }),
               }),
+              ...(patch.output !== undefined && { output: Option.getOrNull(patch.output) }),
             }).where(eq(schema.runs.id, id)),
           catch: toStorageError,
         }),
@@ -156,6 +160,13 @@ export const PostgresStorageLive = (db: Db) =>
               ...(patch.completedAt !== undefined && { completedAt: Option.getOrNull(patch.completedAt) }),
               ...(patch.retryAfter !== undefined && { retryAfter: Option.getOrNull(patch.retryAfter) }),
               ...(patch.error !== undefined && { error: Option.getOrNull(patch.error) }),
+              ...(patch.waitingFor !== undefined && {
+                waitingFor: Option.match(patch.waitingFor, {
+                  onNone: () => null,
+                  onSome: serializeWaitingFor,
+                }),
+              }),
+              ...(patch.output !== undefined && { output: Option.getOrNull(patch.output) }),
             }
             const rows = await db
               .update(schema.runs)

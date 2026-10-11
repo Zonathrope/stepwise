@@ -20,9 +20,10 @@ integrationsRouter.get("/", async (c) => {
   }
 
   return c.json(
-    result.value.map((f: { name: string; event: string; concurrency?: number }) => ({
+    result.value.map((f) => ({
       name: f.name,
-      event: f.event,
+      event: f.event ?? null,
+      cron: f.cron ?? null,
       concurrency: f.concurrency ?? 1,
     })),
   )

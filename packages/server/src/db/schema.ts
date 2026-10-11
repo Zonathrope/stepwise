@@ -21,6 +21,7 @@ export const runs = pgTable("runs", {
   retryAfter: timestamp("retry_after", { withTimezone: true }),
   error: text("error"),
   waitingFor: jsonb("waiting_for"),
+  output: jsonb("output").$type<unknown>(),
 })
 
 export const steps = pgTable("steps", {
