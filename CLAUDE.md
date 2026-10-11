@@ -98,6 +98,7 @@ HTTP API:
 - `GET /api/runs` — filterable by `functionName`, `status`, `limit`, `offset`
 - `GET /api/runs/:id` — run detail with step list; includes `retryAfter`
 - `POST /api/runs/:id/cancel` — cancels `pending`/`retrying`/`waiting` runs; `409` if already running/completed/failed
+- `POST /api/runs/bulk-cancel` / `bulk-retry` — `{ filter: { status?, functionName? } }`; bulk-cancel accepts `pending`/`retrying`/`waiting`
 - `GET /api/integrations` — lists registered functions
 - `GET /api/stream` — SSE for live updates
 - `GET /health`

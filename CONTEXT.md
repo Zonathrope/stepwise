@@ -42,9 +42,10 @@ A nullable timestamp column on `runs`. A Run with `status = "pending"` or `"retr
 - `pending` — queued for first attempt, never executed
 - `running` — currently being executed by a worker
 - `retrying` — failed at least once; waiting for `retry_after` before next attempt
+- `waiting` — parked in `step.waitForEvent` until a matching Event arrives or its timeout elapses
 - `completed` — all steps finished successfully
 - `failed` — a Step exhausted its `maxAttempts`; terminal, never re-queued
-- `cancelled` — explicitly cancelled via `POST /api/runs/:id/cancel`; only `pending` and `retrying` runs can be cancelled
+- `cancelled` — explicitly cancelled via `POST /api/runs/:id/cancel`; only `pending`, `retrying` and `waiting` runs can be cancelled
 
 **Event schema**
 An optional Effect `Schema` declared on a `StepperFunction` for its event's `data` payload. Validated server-side before a Run is created; events that fail validation for a given function are silently skipped for that function (logged), not rejected globally. Multiple functions may handle the same event name with different schemas.
@@ -62,7 +63,7 @@ A plain object `{ functions, layer, storageLayer }` that can be passed to both `
 `step.sleep(name, duration)` — a named, memoized pause. On first execution: records the step as completed, sets the Run's `retry_after = now + duration`, sets status to `"retrying"`, and aborts further handler execution. On subsequent execution: step is already completed; handler continues past it immediately. Sleep steps survive process restarts because the `retry_after` timestamp is persisted.
 
 **Event idempotency**
-`POST /api/events` is idempotent on `event.id`. A duplicate `id` returns the original response with no new Runs created. Callers are responsible for generating unique IDs; the server enforces the deduplication contract.
+`POST /api/events` is idempotent on `event.id`. A duplicate `id` returns the original response with no new Runs created, and does not resume `waiting` Runs a second time. This holds even for Events that trigger no Functions. Callers are responsible for generating unique IDs; the server enforces the deduplication contract.
 
 **Dashboard auth**
 `STEPPER_DASHBOARD_TOKEN` environment variable. All API calls from the dashboard include it as a bearer token. The server rejects requests without a valid token with `401`. Both the server and dashboard must be started with the same token value.
