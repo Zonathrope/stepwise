@@ -6,6 +6,7 @@ import { Effect, type Layer } from "effect"
 import type { Storage, Registry, StepperFunction } from "@integration-stepper/core"
 import { RegistryLive } from "@integration-stepper/core"
 import { SseBroadcaster } from "./sse.js"
+import { relayRunUpdates } from "./run-updates.js"
 import { eventsRouter } from "./routes/events.js"
 import { runsRouter } from "./routes/runs.js"
 import { integrationsRouter } from "./routes/integrations.js"
@@ -133,7 +134,11 @@ export const createApp = <R>(opts: AppOptions<R>): { app: Hono<ServerEnv>; shutd
     })
   }
 
+  // Relay run changes (from this or any other worker process) to SSE clients
+  const stopRelay = relayRunUpdates(sse)
+
   const shutdown = async (): Promise<void> => {
+    await (await stopRelay)()
     if (worker) {
       await worker.shutdown()
     }

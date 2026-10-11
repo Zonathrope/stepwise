@@ -76,6 +76,19 @@ export const PostgresStorageLive = (db: Db) =>
           catch: toStorageError,
         }),
 
+      listEvents: (opts) =>
+        Effect.tryPromise({
+          try: async () => {
+            const base = db.select().from(schema.events)
+            const rows = await (opts?.name ? base.where(eq(schema.events.name, opts.name)) : base)
+              .orderBy(desc(schema.events.timestamp))
+              .limit(opts?.limit ?? 50)
+              .offset(opts?.offset ?? 0)
+            return rows.map(toEventPayload)
+          },
+          catch: toStorageError,
+        }),
+
       saveEventWithRuns: (event, newRuns) =>
         Effect.tryPromise({
           try: () =>
@@ -244,6 +257,9 @@ export const PostgresStorageLive = (db: Db) =>
             const conditions = []
             if (opts?.functionName) {
               conditions.push(eq(schema.runs.integrationName, opts.functionName))
+            }
+            if (opts?.eventId) {
+              conditions.push(eq(schema.runs.eventId, opts.eventId))
             }
             if (opts?.status) {
               conditions.push(eq(schema.runs.status, opts.status))

@@ -4,6 +4,7 @@ import { sql, inArray } from "drizzle-orm"
 import * as schema from "./db/schema.js"
 import type { Db } from "./db/client.js"
 import postgres from "postgres"
+import { notifyRunUpdate } from "./run-updates.js"
 
 const ADVISORY_LOCK_ID = 1234567890
 const NOTIFY_CHANNEL = "stepper_runs"
@@ -231,6 +232,8 @@ export class Worker {
         return eligible
       })
 
+      for (const row of picked) void notifyRunUpdate(this.db, row.id)
+
       for (const row of picked) {
         if (this.shuttingDown) break
         const funcName = row.integration_name
@@ -258,6 +261,7 @@ export class Worker {
     } catch (err) {
       console.error(`[worker] Unexpected error executing run ${runId}:`, err)
     } finally {
+      void notifyRunUpdate(this.db, runId)
       this.inFlightCount--
       const prev = this.inFlightPerFunction.get(funcName) ?? 1
       if (prev <= 1) {
