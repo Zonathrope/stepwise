@@ -108,8 +108,11 @@ HTTP API:
 - `GET /api/runs/:id` — run detail with step list; includes `retryAfter` and `output`
 - `POST /api/runs/:id/cancel` — cancels `pending`/`retrying`/`waiting` runs; `409` if already running/completed/failed
 - `POST /api/runs/bulk-cancel` / `bulk-retry` — `{ filter: { status?, functionName? } }`; bulk-cancel accepts `pending`/`retrying`/`waiting`
+- `GET /api/events` — list events newest first (`name`, `limit`, `offset`), each with `runCount`
+- `GET /api/events/:id` — event detail with its runs
+- `POST /api/events/:id/replay` — re-dispatch the event's name + data under a new id; returns `{ id, replayOf, runs }`
 - `GET /api/integrations` — lists registered functions (`event` or `cron`, the other is null)
-- `GET /api/stream` — SSE for live updates
+- `GET /api/stream` — SSE for live updates: `event.dispatched`, and `run.updated` relayed from Postgres `NOTIFY stepper_run_updates` (sent by workers on claim/finish and by cancel/retry; see `run-updates.ts`)
 - `GET /health`
 
 All `/api/*` routes require `Authorization: Bearer <token>` when `STEPPER_DASHBOARD_TOKEN` env var is set.
@@ -125,7 +128,9 @@ Next.js 15 App Router, all pages are React Server Components (fetch from server 
 Routes:
 - `/` — overview: status counts + recent runs + integrations list
 - `/runs` — filterable run list (status filter via query params)
-- `/runs/[id]` — run detail with step timeline, duration, output/error per step
+- `/runs/[id]` — run detail with step timeline, duration, output/error per step, and what a waiting run is waiting for
+- `/events`, `/events/[id]` — events browser; event detail with its runs and a "Replay event" action
+- `/api/stream` (route handler) — same-origin proxy for the server SSE stream that adds the bearer token; `LiveRefresh` uses it to `router.refresh()` the runs, run detail and events pages
 - `/integrations` — list of registered integrations
 
 `src/lib/api.ts` — typed fetch wrappers for all server endpoints.  

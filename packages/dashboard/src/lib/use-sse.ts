@@ -1,16 +1,21 @@
 "use client"
 
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 
-const SERVER_URL = process.env["NEXT_PUBLIC_SERVER_URL"] ?? "http://localhost:4000"
-
-export function useSse(onMessage: (msg: unknown) => void) {
+/**
+ * Subscribe to server events via the dashboard's same-origin `/api/stream` proxy.
+ * Returns whether the stream is currently connected. EventSource reconnects on its own.
+ */
+export function useSse(onMessage: (msg: unknown) => void): boolean {
   const onMessageRef = useRef(onMessage)
   onMessageRef.current = onMessage
+  const [connected, setConnected] = useState(false)
 
   useEffect(() => {
-    const es = new EventSource(`${SERVER_URL}/api/stream`)
+    const es = new EventSource("/api/stream")
 
+    es.onopen = () => setConnected(true)
+    es.onerror = () => setConnected(false)
     es.onmessage = (event) => {
       try {
         const data: unknown = JSON.parse(event.data)
@@ -20,4 +25,6 @@ export function useSse(onMessage: (msg: unknown) => void) {
 
     return () => { es.close() }
   }, [])
+
+  return connected
 }

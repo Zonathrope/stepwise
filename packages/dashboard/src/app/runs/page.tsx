@@ -2,6 +2,7 @@ import { getRuns, getRunCount } from "@/lib/api"
 import { revalidatePath } from "next/cache"
 import { relativeTime, duration, absoluteTime } from "@/lib/utils"
 import { statusTextColor, statusDotColor } from "@/lib/status-styles"
+import { LiveRefresh } from "@/components/live-refresh"
 
 const PAGE_SIZE = 50
 const STATUSES = ["pending", "running", "retrying", "waiting", "completed", "failed", "cancelled"] as const
@@ -55,7 +56,10 @@ export default async function RunsPage({
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold">Runs</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-lg font-semibold">Runs</h1>
+            <LiveRefresh />
+          </div>
           <p className="text-zinc-500 text-sm mt-0.5">
             {params.status
               ? `Filtered by: ${params.status}`
@@ -118,7 +122,7 @@ export default async function RunsPage({
                   </a>
                 </td>
                 <td className="px-4 py-3 hidden md:table-cell">
-                  <code className="text-xs text-zinc-500 font-mono">{run.eventId.slice(0, 16)}…</code>
+                  <a href={`/events/${encodeURIComponent(run.eventId)}`} className="text-xs text-zinc-500 hover:text-indigo-300 font-mono">{run.eventId.slice(0, 16)}…</a>
                 </td>
                 <td className="px-4 py-3">
                   <span title={absoluteTime(run.startedAt)} className="text-zinc-400 text-xs tabular-nums cursor-default">

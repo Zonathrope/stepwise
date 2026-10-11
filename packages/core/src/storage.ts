@@ -5,6 +5,12 @@ import { StorageError } from "./errors.js"
 export interface Storage {
   readonly saveEvent: (event: EventPayload) => Effect.Effect<void, StorageError>
   readonly getEvent: (id: string) => Effect.Effect<Option.Option<EventPayload>, StorageError>
+  /** Events newest first, optionally filtered by exact name. */
+  readonly listEvents: (opts?: {
+    name?: string
+    limit?: number
+    offset?: number
+  }) => Effect.Effect<EventPayload[], StorageError>
 
   /**
    * Atomically persist an event together with all runs created for it.
@@ -41,6 +47,7 @@ export interface Storage {
   }) => Effect.Effect<RunRecord[], StorageError>
   readonly countRuns: (opts?: {
     functionName?: string
+    eventId?: string
     status?: RunStatus
   }) => Effect.Effect<number, StorageError>
 
@@ -82,6 +89,14 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
   return Storage.of({
     saveEvent: (event) => wrap(() => { events.set(event.id, event) }),
     getEvent: (id) => wrap(() => Option.fromNullable(events.get(id))),
+    listEvents: (opts) =>
+      wrap(() => {
+        let all = Array.from(events.values())
+        if (opts?.name) all = all.filter((e) => e.name === opts.name)
+        all.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+        const offset = opts?.offset ?? 0
+        return all.slice(offset, offset + (opts?.limit ?? 50))
+      }),
 
     saveEventWithRuns: (event, newRuns) =>
       wrap(() => {
@@ -186,6 +201,7 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
         Array.from(runs.values()).filter(
           (r) =>
             (!opts?.functionName || r.functionName === opts.functionName) &&
+            (!opts?.eventId || r.eventId === opts.eventId) &&
             (!opts?.status || r.status === opts.status),
         ).length,
       ),

@@ -4,6 +4,7 @@ import { Effect, Layer, Option, Schema } from "effect"
 import { notifyInvoker, Storage, RunStatus } from "@integration-stepper/core"
 import type { RunRecord, StepRecord } from "@integration-stepper/core"
 import type { ServerEnv } from "../types.js"
+import { notifyRunUpdate } from "../run-updates.js"
 
 export const runsRouter = new Hono<ServerEnv>()
 
@@ -163,7 +164,10 @@ runsRouter.post("/:id/cancel", async (c) => {
   }
 
   const outcome = result.value
-  if (outcome.ok) return c.json({ ok: true }, 200)
+  if (outcome.ok) {
+    await notifyRunUpdate(c.get("db"), runId)
+    return c.json({ ok: true }, 200)
+  }
   if (outcome.notFound) return c.json({ error: "Run not found" }, 404)
   return c.json({ error: `Run cannot be cancelled in status ${outcome.status}` }, 409)
 })
@@ -191,6 +195,7 @@ runsRouter.post("/:id/retry", async (c) => {
   const outcome = result.value
   if (outcome.ok) {
     await notifyWorker(c)
+    await notifyRunUpdate(c.get("db"), runId)
     return c.json({ ok: true }, 200)
   }
   if (outcome.notFound) return c.json({ error: "Run not found" }, 404)
@@ -248,6 +253,7 @@ const bulkApply = async (
   if (result._tag === "Failure") {
     return c.json({ error: "Bulk operation failed" }, 500)
   }
+  if (result.value > 0) await notifyRunUpdate(c.get("db"))
   return c.json({ affected: result.value }, 200)
 }
 
@@ -259,7 +265,7 @@ runsRouter.post("/bulk-retry", async (c) => {
   return res
 })
 
-const serializeRun = (run: RunRecord) => ({
+export const serializeRun = (run: RunRecord) => ({
   id: run.id,
   functionName: run.functionName,
   eventId: run.eventId,
