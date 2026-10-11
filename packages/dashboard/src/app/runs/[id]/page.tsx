@@ -176,6 +176,7 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
           {([
             ["Run ID",   run.id],
             ["Event ID", run.eventId],
+            ...(run.handlerVersion ? [["Version", run.handlerVersion]] : []),
             ["Started",  absoluteTime(run.startedAt)],
             ...(run.completedAt ? [["Completed", absoluteTime(run.completedAt)]] : []),
           ] as [string, string][]).map(([label, value]) => (

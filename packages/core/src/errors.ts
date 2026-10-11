@@ -50,6 +50,21 @@ export class NonDeterministicHandlerError extends Data.TaggedError("NonDetermini
   }
 }
 
+/**
+ * A run's handler no longer matches the code that started it: either its declared `version`
+ * changed, or its step sequence diverged from the one recorded for the run.
+ */
+export class HandlerVersionMismatchError extends Data.TaggedError("HandlerVersionMismatchError")<{
+  functionName: string
+  runId: string
+  reason: "version" | "step-sequence"
+  detail: string
+}> {
+  override get message() {
+    return `Handler "${this.functionName}" changed while run ${this.runId} was in flight (${this.reason}): ${this.detail}`
+  }
+}
+
 export interface ValidationIssue {
   path?: ReadonlyArray<string | number>
   message: string

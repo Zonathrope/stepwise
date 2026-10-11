@@ -18,7 +18,7 @@ export interface Storage {
   readonly createRun: (run: RunRecord) => Effect.Effect<void, StorageError>
   readonly updateRun: (
     id: string,
-    patch: Partial<Pick<RunRecord, "status" | "completedAt" | "error" | "retryAfter" | "waitingFor">>,
+    patch: Partial<Pick<RunRecord, "status" | "completedAt" | "error" | "retryAfter" | "waitingFor" | "stepJournal">>,
   ) => Effect.Effect<void, StorageError>
   /**
    * Atomically apply `patch` only if the run's current status is in `from`.
@@ -107,6 +107,8 @@ export const InMemoryStorageLive = Layer.sync(Storage, () => {
           error: patch.error !== undefined ? patch.error : existing.error,
           retryAfter: patch.retryAfter !== undefined ? patch.retryAfter : existing.retryAfter,
           waitingFor: patch.waitingFor !== undefined ? patch.waitingFor : existing.waitingFor,
+          handlerVersion: existing.handlerVersion,
+          stepJournal: patch.stepJournal !== undefined ? patch.stepJournal : existing.stepJournal,
         })
       }),
     transitionRun: (id, from, patch) =>

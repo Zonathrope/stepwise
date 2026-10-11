@@ -4,11 +4,33 @@ import type { EventPayload, WaitingFor } from "./schema.js"
 import { Storage } from "./storage.js"
 import { Registry } from "./registry.js"
 import { makeStepContext } from "./step-context.js"
-import { RunNotFoundError, StepperPark, ValidationError, type ValidationIssue } from "./errors.js"
+import {
+  HandlerVersionMismatchError,
+  RunNotFoundError,
+  StepError,
+  StepperPark,
+  ValidationError,
+  type ValidationIssue,
+} from "./errors.js"
+import { StepJournal } from "./journal.js"
 
 const isStepperPark = (e: unknown): e is StepperPark =>
   e instanceof StepperPark ||
   (typeof e === "object" && e !== null && "_tag" in e && (e as { _tag: unknown })._tag === "StepperPark")
+
+/** Human-readable error for the run record (a bare `String(error)` loses tagged errors' details). */
+export const describeRunError = (error: unknown): string => {
+  if (error instanceof StepError) {
+    const cause = error.cause instanceof Error ? error.cause.message : String(error.cause)
+    return `StepError: step "${error.stepName}" failed (attempt ${error.attempt}): ${cause}`
+  }
+  if (error instanceof Error) {
+    const tag = (error as { _tag?: unknown })._tag
+    const name = typeof tag === "string" ? tag : error.name
+    return error.message ? `${name}: ${error.message}` : name
+  }
+  return String(error)
+}
 
 export const executeRun = (runId: string) =>
   Effect.gen(function* () {
@@ -28,7 +50,30 @@ export const executeRun = (runId: string) =>
 
     yield* storage.updateRun(runId, { status: "running" })
 
-    const stepContext = makeStepContext(runId, storage)
+    const policy = fn.onVersionMismatch ?? "fail"
+    const runVersion = Option.getOrNull(run.handlerVersion)
+    const fnVersion = fn.version ?? null
+    if (runVersion !== fnVersion) {
+      const mismatch = new HandlerVersionMismatchError({
+        functionName: fn.name,
+        runId,
+        reason: "version",
+        detail: `run was created by version ${JSON.stringify(runVersion)}, current handler is ${JSON.stringify(fnVersion)}`,
+      })
+      if (policy === "fail") {
+        yield* storage.updateRun(runId, {
+          status: "failed",
+          completedAt: Option.some(new Date()),
+          error: Option.some(describeRunError(mismatch)),
+          waitingFor: Option.none(),
+        })
+        return
+      }
+      yield* Effect.logWarning(mismatch.message)
+    }
+
+    const journal = new StepJournal(run.stepJournal, fn.name, runId, policy)
+    const stepContext = makeStepContext(runId, storage, journal)
 
     type Outcome =
       | { _tag: "completed" }
@@ -37,6 +82,8 @@ export const executeRun = (runId: string) =>
 
     // Run the handler, distinguishing StepperPark (park signal) from real errors
     const outcome: Outcome = yield* fn.handler(event, stepContext).pipe(
+      // Returning early, before steps the run already recorded, is a divergence too
+      Effect.zipLeft(journal.checkComplete()),
       Effect.map((): Outcome => ({ _tag: "completed" })),
       Effect.catchAll((error): Effect.Effect<Outcome> => {
         if (isStepperPark(error)) {
@@ -46,6 +93,9 @@ export const executeRun = (runId: string) =>
       }),
     )
 
+    // Persist newly recorded step keys along with whatever the outcome writes
+    const journalPatch = journal.updated ? { stepJournal: journal.updated } : {}
+
     if (outcome._tag === "parked") {
       const park = outcome.park
       if (park.reason === "sleep" || park.reason === "step-retry") {
@@ -53,6 +103,7 @@ export const executeRun = (runId: string) =>
           status: "retrying",
           retryAfter: Option.some(park.retryAfter!),
           waitingFor: Option.none(),
+          ...journalPatch,
         })
       } else if (park.reason === "wait") {
         const waitingFor = park.waitingFor!
@@ -60,6 +111,7 @@ export const executeRun = (runId: string) =>
           status: "waiting",
           retryAfter: Option.fromNullable(waitingFor.timeoutAt),
           waitingFor: Option.some(waitingFor),
+          ...journalPatch,
         })
       } else {
         // step-completed: park back to pending for next pickup
@@ -67,6 +119,7 @@ export const executeRun = (runId: string) =>
           status: "pending",
           retryAfter: Option.none(),
           waitingFor: Option.none(),
+          ...journalPatch,
         })
       }
     } else if (outcome._tag === "completed") {
@@ -74,13 +127,15 @@ export const executeRun = (runId: string) =>
         status: "completed",
         completedAt: Option.some(new Date()),
         waitingFor: Option.none(),
+        ...journalPatch,
       })
     } else {
       yield* storage.updateRun(runId, {
         status: "failed",
         completedAt: Option.some(new Date()),
-        error: Option.some(String(outcome.error)),
+        error: Option.some(describeRunError(outcome.error)),
         waitingFor: Option.none(),
+        ...journalPatch,
       })
     }
   })
@@ -168,6 +223,8 @@ export const dispatchEvent = (event: EventPayload) =>
       error: Option.none<string>(),
       retryAfter: Option.none<Date>(),
       waitingFor: Option.none<WaitingFor>(),
+      handlerVersion: Option.fromNullable(fn.version),
+      stepJournal: [],
     }))
 
     // Event and all runs are persisted atomically

@@ -78,6 +78,8 @@ Key files:
 
 **`step.waitForEvent`**: parks the run as `"waiting"` with a persisted `waitingFor` filter (`match` = dotted `event.data` paths -> required values; serialisable, not a predicate). `dispatchEvent` resumes matching waiting runs via `storage.resumeWaitingRun` (atomic; the event becomes the step output). `timeout` is stored in `retryAfter`; a waiting run is pickup-eligible only once it elapses, then the step resolves `null` (or fails with `StepError` if `onTimeout: "throw"`). Migration `0002_wait_for_event.sql`. Tests: `pnpm --filter @integration-stepper/core test`.
 
+**Version guard** (`journal.ts`): `RunRecord.stepJournal` lists step keys in first-request order. `makeStepContext(runId, storage, journal)` calls `journal.track(key)` for every step request before touching storage; a different key at a recorded position, or the handler returning before the recorded length (`checkComplete`), fails with `HandlerVersionMismatchError` (or logs and adopts the new shape under `onVersionMismatch: "warn"`). `executeRun` also compares the run's `handlerVersion` (set at dispatch from `fn.version`) to the current `fn.version` before running the handler. New journal entries are persisted with the outcome's `updateRun`. Migration `0006_handler_version_guard.sql`. Run errors are formatted by `describeRunError` (step name, attempt and cause, not just the error tag).
+
 **Step retry**: `step.run(name, fn, { maxAttempts: 3 })` — on fn() failure, the step is marked `"failed"` (or left `"running"` if attempts remain), and either `StepperPark` re-queues the run or `StepError` terminally fails it.
 
 ### packages/server

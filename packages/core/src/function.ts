@@ -22,6 +22,18 @@ export interface StepperFunction<TData = unknown, TError = never, TRequirements 
   readonly concurrency?: number
   /** Optional validator for `event.data`; checked in `dispatchEvent` before any run is created. */
   readonly schema?: EventSchema<TData>
+  /**
+   * Optional handler version, stored on each run. Bump it when you change a handler in a way
+   * that in-flight runs must not resume under (e.g. logic between steps). Changes to the step
+   * sequence are detected without it.
+   */
+  readonly version?: string
+  /**
+   * What to do when a run resumes under a different handler version or step sequence:
+   * `"fail"` (default) fails the run with `HandlerVersionMismatchError`; `"warn"` logs and
+   * continues, adopting the new step sequence.
+   */
+  readonly onVersionMismatch?: "fail" | "warn"
 }
 
 export const defineFunction = <TData = unknown, TError = never, TRequirements = never>(

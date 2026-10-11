@@ -27,7 +27,13 @@ The process or loop that dequeues pending Runs and executes them by invoking the
 The delay before a failed Run is re-queued. Configurable per Function via a `retryDelay` schedule; falls back to exponential backoff with jitter (`min(30, 2^attempt)` seconds ± jitter). Once a Step exhausts its `maxAttempts`, the Run is permanently `failed` and never re-queued.
 
 **Determinism constraint**
-A Function handler must execute the same Steps in the same order on every attempt of a Run. Step outputs are memoized by call order; if the handler branches differently on a retry, the wrong memoized output will be fed to the wrong Step. This constraint is documented, not enforced at runtime.
+A Function handler must execute the same Steps in the same order on every attempt of a Run. Step outputs are memoized by call order; if the handler branches differently on a retry, the wrong memoized output will be fed to the wrong Step. Enforced at runtime by the **Step journal**, and checked in tests by the Test runner.
+
+**Step journal**
+The Step keys a Run has requested, in order, stored on the Run. Every replay is checked against it; a divergence (inserted, removed, renamed or reordered Steps before the Run's current position) fails the Run with `HandlerVersionMismatchError`, or only logs when the Function sets `onVersionMismatch: "warn"`. Appending Steps after the recorded sequence is allowed.
+
+**Handler version**
+An optional `version` string declared on a Function and stored on each Run at creation. A Run resumed under a different version is treated as a version mismatch before its handler runs. Used for changes the Step journal cannot detect.
 
 **StepperFunction**
 The canonical TypeScript type name for a defined Function (avoids collision with the JS built-in `Function`). Created via `defineFunction()`. Parameterised as `StepperFunction<TData, TError, TRequirements>` where `TRequirements` is the Effect service layer the handler needs.

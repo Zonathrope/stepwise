@@ -3,7 +3,8 @@ import { Context, Duration, Effect, Option } from "effect"
 import type { EventPayload, WaitingFor } from "./schema.js"
 import type { Storage } from "./storage.js"
 import { computeBackoffDelay, type BackoffOptions } from "./backoff.js"
-import { StepError, StorageError, StepperPark } from "./errors.js"
+import { HandlerVersionMismatchError, StepError, StorageError, StepperPark } from "./errors.js"
+import type { StepJournal } from "./journal.js"
 
 export interface StepOptions {
   maxAttempts?: number
@@ -32,21 +33,22 @@ export interface StepContext {
     name: string,
     fn: () => Promise<A> | A,
     opts?: StepOptions,
-  ) => Effect.Effect<A, StepperPark | StepError | StorageError, never>
+  ) => Effect.Effect<A, StepperPark | StepError | StorageError | HandlerVersionMismatchError, never>
   readonly sleep: (
     name: string,
     duration: Duration.Duration,
-  ) => Effect.Effect<void, StepperPark | StorageError, never>
+  ) => Effect.Effect<void, StepperPark | StorageError | HandlerVersionMismatchError, never>
   /** Park the run until a matching event arrives; resolves with that event (or null on timeout). */
   readonly waitForEvent: (
     name: string,
     opts: WaitForEventOptions,
-  ) => Effect.Effect<EventPayload | null, StepperPark | StepError | StorageError, never>
+  ) => Effect.Effect<EventPayload | null, StepperPark | StepError | StorageError | HandlerVersionMismatchError, never>
 }
 
 export const StepContext = Context.GenericTag<StepContext>("@integration-stepper/core/StepContext")
 
-export const makeStepContext = (runId: string, storage: Storage): StepContext => {
+/** `journal`, when given, checks each step request against the run's recorded step sequence. */
+export const makeStepContext = (runId: string, storage: Storage, journal?: StepJournal): StepContext => {
   // Track call counts per step name for auto-indexing (runId:name#callIndex)
   const callCounts = new Map<string, number>()
 
@@ -56,6 +58,11 @@ export const makeStepContext = (runId: string, storage: Storage): StepContext =>
     return `${name}#${count}`
   }
 
+  // Look up a step and check its key against the run's journal before the caller acts on it
+  // (returns a memoised output or runs the step). The read itself has no side effects.
+  const loadStep = (key: string) =>
+    Effect.zipLeft(storage.getStep(runId, key), journal ? journal.track(key) : Effect.void)
+
   return {
     runId,
 
@@ -64,7 +71,7 @@ export const makeStepContext = (runId: string, storage: Storage): StepContext =>
         const indexedName = getIndexedName(name)
         const maxAttempts = opts?.maxAttempts ?? 3
 
-        const existing = yield* storage.getStep(runId, indexedName)
+        const existing = yield* loadStep(indexedName)
 
         // Already completed — return memoized output and continue handler
         if (Option.isSome(existing) && existing.value.status === "completed") {
@@ -140,7 +147,7 @@ export const makeStepContext = (runId: string, storage: Storage): StepContext =>
       Effect.gen(function* () {
         const indexedName = getIndexedName(name)
 
-        const existing = yield* storage.getStep(runId, indexedName)
+        const existing = yield* loadStep(indexedName)
 
         // Already completed � return void and continue handler
         if (Option.isSome(existing) && existing.value.status === "completed") {
@@ -179,10 +186,9 @@ export const makeStepContext = (runId: string, storage: Storage): StepContext =>
     waitForEvent: (name: string, opts: WaitForEventOptions) =>
       Effect.gen(function* () {
         const indexedName = getIndexedName(name)
-        const stepKey = `${runId}:${indexedName}`
         const onTimeout = opts.onTimeout ?? "null"
 
-        const existing = yield* storage.getStep(runId, indexedName)
+        const existing = yield* loadStep(indexedName)
 
         // Already resolved (by a matching event or a memoised timeout)
         if (Option.isSome(existing) && existing.value.status === "completed") {

@@ -53,5 +53,9 @@ export const RunRecord = Schema.Struct({
   error: Schema.OptionFromNullOr(Schema.String),
   retryAfter: Schema.OptionFromNullOr(Schema.DateFromSelf),
   waitingFor: Schema.OptionFromNullOr(WaitingFor),
+  /** The function's declared `version` when the run was created (none if it declared none). */
+  handlerVersion: Schema.OptionFromNullOr(Schema.String),
+  /** Step keys in the order the handler first requested them; checked on every replay. */
+  stepJournal: Schema.Array(Schema.String),
 })
 export type RunRecord = typeof RunRecord.Type

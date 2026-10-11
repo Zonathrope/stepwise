@@ -16,6 +16,8 @@ export interface RunSummary {
   completedAt: string | null
   retryAfter: string | null
   error: string | null
+  /** The function's declared `version` when this run was created. */
+  handlerVersion: string | null
 }
 
 export interface StepSummary {

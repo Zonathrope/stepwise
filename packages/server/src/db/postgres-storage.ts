@@ -36,6 +36,8 @@ const toRunRecord = (row: typeof schema.runs.$inferSelect): RunRecord => ({
   retryAfter: Option.fromNullable(row.retryAfter),
   error: Option.fromNullable(row.error),
   waitingFor: deserializeWaitingFor(row.waitingFor),
+  handlerVersion: Option.fromNullable(row.handlerVersion),
+  stepJournal: row.stepJournal ?? [],
 })
 
 const toStepRecord = (row: typeof schema.steps.$inferSelect): StepRecord => ({
@@ -101,6 +103,8 @@ export const PostgresStorageLive = (db: Db) =>
                     onNone: () => null,
                     onSome: serializeWaitingFor,
                   }),
+                  handlerVersion: Option.getOrNull(run.handlerVersion),
+                  stepJournal: [...run.stepJournal],
                 })),
               )
             }),
@@ -123,6 +127,8 @@ export const PostgresStorageLive = (db: Db) =>
                 onNone: () => null,
                 onSome: serializeWaitingFor,
               }),
+              handlerVersion: Option.getOrNull(run.handlerVersion),
+              stepJournal: [...run.stepJournal],
             }),
           catch: toStorageError,
         }),
@@ -141,6 +147,7 @@ export const PostgresStorageLive = (db: Db) =>
                   onSome: serializeWaitingFor,
                 }),
               }),
+              ...(patch.stepJournal !== undefined && { stepJournal: [...patch.stepJournal] }),
             }).where(eq(schema.runs.id, id)),
           catch: toStorageError,
         }),
