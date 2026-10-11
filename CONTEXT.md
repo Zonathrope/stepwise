@@ -21,7 +21,7 @@ The storage identity of a Step within a Run: `runId + ":" + stepName + "#" + cal
 The mechanism by which dispatched Runs are held until a worker picks them up for execution. Decouples event receipt (HTTP) from execution (worker).
 
 **Worker**
-The process or loop that dequeues pending Runs and executes them by invoking the Function handler with a StepContext. Notified of new work via Postgres `LISTEN/NOTIFY` on the `stepper_runs` channel; also polls every 5s as a safety net. Runs in the same process as the Hono server by default (`createApp({ worker: true })`); can be separated via `createWorker()` for independent deployment. Executes up to `concurrency` (default 5, `DEFAULT_CONCURRENCY`) Runs simultaneously, further capped per Function by the Function's own `concurrency`. On startup, re-queues all Runs in `"running"` state (crash recovery).
+The process or loop that dequeues pending Runs and executes them by invoking the Function handler with a StepContext. Notified of new work via Postgres `LISTEN/NOTIFY` on the `stepper_runs` channel; also polls every 5s as a safety net. Runs in the same process as the Hono server by default (`createApp({ worker: true })`); can be separated via `createWorker()` for independent deployment. Executes up to `concurrency` (default 5, `DEFAULT_CONCURRENCY`) Runs simultaneously, further capped by Function **Concurrency limits**. Holds a lease on each Run it executes (see **Worker heartbeat**).
 
 **Retry backoff**
 The delay before a failed Step is re-attempted. Configured per Step via `step.run(name, fn, { maxAttempts, backoff })`, where `backoff` is `immediate` (the default), `fixed`, `linear` or `exponential`, with optional `maxDelay` and jitter. While attempts remain the Run is parked as `"retrying"` with `retry_after` set to the next attempt time. Once a Step exhausts its `maxAttempts` (default 3), the Run is `failed`; it is only re-queued by an explicit retry (`POST /api/runs/:id/retry`).
@@ -78,7 +78,10 @@ A plain object `{ functions, layer, storageLayer }` that can be passed to both `
 `STEPPER_DASHBOARD_TOKEN` environment variable. All API calls from the dashboard include it as a bearer token. The server rejects requests without a valid token with `401`. Both the server and dashboard must be started with the same token value.
 
 **Multi-worker safety**
-Multiple worker processes may run against the same database. `SELECT ... FOR UPDATE SKIP LOCKED` prevents double-execution of Runs. Startup crash-recovery re-queuing is guarded by a Postgres advisory lock so only one worker re-queues stuck Runs during simultaneous restarts.
+Multiple worker processes may run against the same database. `SELECT ... FOR UPDATE SKIP LOCKED` prevents double-execution of Runs. Crash recovery only re-queues Runs whose worker stopped heartbeating, so a worker restarting during a rolling deploy never re-queues Runs another live worker is executing.
+
+**Worker heartbeat**
+When a worker claims a Run it records itself in `claimed_by` and sets `heartbeat_at`; while executing it refreshes `heartbeat_at` every 10s. Any worker, at startup and periodically, re-queues `"running"` Runs whose heartbeat is older than 60s (or missing, for Runs claimed by pre-heartbeat workers): their worker crashed or hung. A worker that is merely slow is protected as long as its heartbeats continue.
 
 **Drain**
 Graceful shutdown behaviour on `SIGTERM`: the server stops accepting new events; the worker waits for all currently-executing (`"running"`) Runs to finish before the process exits. Sleeping/retrying Runs are not drained — they resume on the next worker startup. Documented as a deploy constraint: sleeping Runs will be picked up by the new code version.

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+import { hostname } from "node:os"
 import { Effect, Layer } from "effect"
 import { dispatchCronTicks, executeRun, Registry, selectClaimable, Storage } from "@integration-stepper/core"
 import { sql, inArray } from "drizzle-orm"
@@ -6,7 +8,6 @@ import type { Db } from "./db/client.js"
 import postgres from "postgres"
 import { notifyRunUpdate } from "./run-updates.js"
 
-const ADVISORY_LOCK_ID = 1234567890
 const NOTIFY_CHANNEL = "stepper_runs"
 const POLL_INTERVAL_MS = 5000
 /** First key of the two-key advisory locks taken per concurrency key during pickup. */
@@ -18,6 +19,14 @@ const CRON_INTERVAL_MS = 5000
  */
 const CRON_STARTUP_LOOKBACK_MS = 60_000
 
+/** How often a worker refreshes `heartbeat_at` on the runs it is executing. */
+export const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000
+/**
+ * A running run whose heartbeat is older than this is presumed orphaned (its worker crashed or
+ * hung) and re-queued. Must comfortably exceed the heartbeat interval plus DB latency.
+ */
+export const DEFAULT_STALE_AFTER_MS = 60_000
+
 /** Default max concurrent runs per worker when `concurrency` is omitted. */
 export const DEFAULT_CONCURRENCY = 5
 
@@ -26,6 +35,10 @@ export interface WorkerOptions {
   storageLayer: Layer.Layer<Storage>
   registryLayer: Layer.Layer<Registry>
   concurrency?: number
+  /** Identifies this worker in `runs.claimed_by`. Defaults to `<hostname>:<pid>:<random>`. */
+  workerId?: string
+  heartbeatIntervalMs?: number
+  staleAfterMs?: number
 }
 
 export class Worker {
@@ -33,6 +46,10 @@ export class Worker {
   private readonly storageLayer: Layer.Layer<Storage>
   private readonly registryLayer: Layer.Layer<Registry>
   private readonly concurrency: number
+  readonly workerId: string
+  private readonly heartbeatIntervalMs: number
+  private readonly staleAfterMs: number
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
   private shuttingDown = false
   private inFlightCount = 0
@@ -47,10 +64,18 @@ export class Worker {
     this.storageLayer = opts.storageLayer
     this.registryLayer = opts.registryLayer
     this.concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY
+    this.workerId = opts.workerId ?? `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`
+    this.heartbeatIntervalMs = opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS
+    this.staleAfterMs = opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS
   }
 
   async start(): Promise<void> {
-    await this.reQueueStuckRuns()
+    await this.reapOrphanedRuns()
+    // Heartbeat and reap on the same cadence: a live worker keeps its runs fresh, and any
+    // worker re-queues runs whose owner stopped heartbeating.
+    this.heartbeatTimer = setInterval(() => {
+      void this.heartbeat().then(() => this.reapOrphanedRuns())
+    }, this.heartbeatIntervalMs)
     await this.warnRetryingRuns()
     await this.setupListen()
     this.schedulePoll()
@@ -81,13 +106,17 @@ export class Worker {
       this.listenSql = null
     }
 
-    if (this.inFlightCount === 0) {
-      return
+    // Keep heartbeating while in-flight runs drain, so nobody re-queues them meanwhile
+    if (this.inFlightCount > 0) {
+      await new Promise<void>((resolve) => {
+        this.shutdownResolve = resolve
+      })
     }
 
-    return new Promise<void>((resolve) => {
-      this.shutdownResolve = resolve
-    })
+    if (this.heartbeatTimer !== null) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
+    }
   }
 
   triggerPickup(): void {
@@ -96,30 +125,44 @@ export class Worker {
     }
   }
 
-  private async reQueueStuckRuns(): Promise<void> {
+  /** Refresh the lease on every run this worker is executing. */
+  private async heartbeat(): Promise<void> {
+    if (this.inFlightCount === 0) return
     try {
-      const lockResult = await this.db.execute<{ acquired: boolean }>(
-        sql`SELECT pg_try_advisory_lock(${ADVISORY_LOCK_ID}) AS acquired`
+      await this.db.execute(
+        sql`UPDATE runs SET heartbeat_at = NOW() WHERE claimed_by = ${this.workerId} AND status = 'running'`
       )
+    } catch (err) {
+      console.error("[worker] Heartbeat failed:", err)
+    }
+  }
 
-      const acquired = lockResult[0]?.acquired
-
-      if (acquired) {
-        try {
-          await this.db.execute(
-            sql`UPDATE runs SET status = 'pending', retry_after = NULL WHERE status = 'running'`
-          )
-          console.log("[worker] Re-queued stuck running runs")
-        } finally {
-          await this.db.execute(
-            sql`SELECT pg_advisory_unlock(${ADVISORY_LOCK_ID})`
-          )
-        }
-      } else {
-        console.log("[worker] Another worker holds the advisory lock; skipping re-queue")
+  /**
+   * Crash recovery: re-queue running runs whose worker stopped heartbeating. Runs with no
+   * heartbeat at all were claimed by a worker that predates heartbeats and are treated as
+   * stale. Safe to run concurrently from every worker (one conditional UPDATE).
+   */
+  private async reapOrphanedRuns(): Promise<void> {
+    try {
+      const staleSeconds = this.staleAfterMs / 1000
+      const reaped = await this.db.execute<{ id: string; claimed_by: string | null }>(
+        sql`
+          UPDATE runs
+          SET status = 'pending', retry_after = NULL, claimed_by = NULL, heartbeat_at = NULL
+          WHERE status = 'running'
+            AND (heartbeat_at IS NULL OR heartbeat_at < NOW() - make_interval(secs => ${staleSeconds}))
+          RETURNING id, claimed_by
+        `
+      )
+      if (reaped.length > 0) {
+        console.log(
+          `[worker] Re-queued ${reaped.length} orphaned run(s) with stale heartbeats:`,
+          reaped.map((r) => r.id),
+        )
+        this.triggerPickup()
       }
     } catch (err) {
-      console.error("[worker] Failed to re-queue stuck runs:", err)
+      console.error("[worker] Failed to re-queue orphaned runs:", err)
     }
   }
 
@@ -302,7 +345,7 @@ export class Worker {
 
         if (claim.length > 0) {
           await tx.update(schema.runs)
-            .set({ status: "running" })
+            .set({ status: "running", claimedBy: this.workerId, heartbeatAt: sql`NOW()` })
             .where(inArray(schema.runs.id, claim))
         }
 

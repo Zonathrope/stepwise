@@ -26,6 +26,10 @@ export const runs = pgTable("runs", {
   concurrencyKey: text("concurrency_key"),
   concurrencyLimit: integer("concurrency_limit"),
   output: jsonb("output").$type<unknown>(),
+  /** Worker currently executing this run (set at claim). */
+  claimedBy: text("claimed_by"),
+  /** Last heartbeat from `claimedBy`; a running run with a stale heartbeat is re-queued. */
+  heartbeatAt: timestamp("heartbeat_at", { withTimezone: true }),
 })
 
 export const steps = pgTable("steps", {
