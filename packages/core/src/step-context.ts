@@ -6,7 +6,8 @@ import type { Registry } from "./registry.js"
 import type { StepperFunction } from "./function.js"
 import { computeBackoffDelay, type BackoffOptions } from "./backoff.js"
 import { runConcurrencyFor } from "./concurrency.js"
-import { StepError, StorageError, StepperPark } from "./errors.js"
+import { HandlerVersionMismatchError, StepError, StorageError, StepperPark } from "./errors.js"
+import type { StepJournal } from "./journal.js"
 
 export interface StepOptions {
   maxAttempts?: number
@@ -62,7 +63,7 @@ export interface StepContext {
     name: string,
     fn: () => Promise<A> | A,
     opts?: StepOptions,
-  ) => Effect.Effect<A, StepperPark | StepError | StorageError, never>
+  ) => Effect.Effect<A, StepperPark | StepError | StorageError | HandlerVersionMismatchError, never>
   /**
    * Run several steps concurrently in a single pickup (like `Promise.all` over `step.run`).
    * Keys of `steps` are the step names. Each step is memoised and retried independently with
@@ -72,16 +73,16 @@ export interface StepContext {
   readonly parallel: <T extends ParallelSteps>(
     steps: T,
     opts?: StepOptions,
-  ) => Effect.Effect<ParallelResults<T>, StepperPark | StepError | StorageError, never>
+  ) => Effect.Effect<ParallelResults<T>, StepperPark | StepError | StorageError | HandlerVersionMismatchError, never>
   readonly sleep: (
     name: string,
     duration: Duration.Duration,
-  ) => Effect.Effect<void, StepperPark | StorageError, never>
+  ) => Effect.Effect<void, StepperPark | StorageError | HandlerVersionMismatchError, never>
   /** Park the run until a matching event arrives; resolves with that event (or null on timeout). */
   readonly waitForEvent: (
     name: string,
     opts: WaitForEventOptions,
-  ) => Effect.Effect<EventPayload | null, StepperPark | StepError | StorageError, never>
+  ) => Effect.Effect<EventPayload | null, StepperPark | StepError | StorageError | HandlerVersionMismatchError, never>
   /**
    * Run another function as a child run and wait for it. Resolves with the child's output;
    * fails the step (StepError) if the child fails, is cancelled or times out. The parent does
@@ -90,12 +91,14 @@ export interface StepContext {
   readonly invoke: <TOutput = unknown, TData = unknown>(
     name: string,
     opts: InvokeOptions<TData>,
-  ) => Effect.Effect<TOutput, StepperPark | StepError | StorageError, never>
+  ) => Effect.Effect<TOutput, StepperPark | StepError | StorageError | HandlerVersionMismatchError, never>
 }
 
 export const StepContext = Context.GenericTag<StepContext>("@integration-stepper/core/StepContext")
 
 export interface StepContextDeps {
+  /** Checks every step request against the run's recorded step sequence (version guard). */
+  readonly journal?: StepJournal
   /** Needed by `step.invoke` to resolve and validate the invoked function. */
   readonly registry?: Registry
 }
@@ -120,11 +123,19 @@ export const makeStepContext = (runId: string, storage: Storage, deps: StepConte
    * reports whether the output was memoised, newly completed, or needs a retry, so callers
    * decide when to park. Fails with StepError once attempts are exhausted.
    */
-  const attemptStep = <A>(key: string, fn: () => Promise<A> | A, opts?: StepOptions) =>
+  /**
+   * Check a step key against the run's journal. Called once per step request, after the
+   * read-only lookup and before the caller acts on it (returns a memoised output or runs it).
+   */
+  const track = (key: string): Effect.Effect<void, HandlerVersionMismatchError> =>
+    deps.journal ? deps.journal.track(key) : Effect.void
+
+  const attemptStep = <A>(key: string, fn: () => Promise<A> | A, opts?: StepOptions, tracked = false) =>
     Effect.gen(function* () {
       const maxAttempts = opts?.maxAttempts ?? 3
 
       const existing = yield* storage.getStep(runId, key)
+      if (!tracked) yield* track(key)
 
       // Already completed — return memoized output and continue handler
       if (Option.isSome(existing) && existing.value.status === "completed") {
@@ -200,11 +211,12 @@ export const makeStepContext = (runId: string, storage: Storage, deps: StepConte
    * key). `resultEventId`, if set, lets the executor resume immediately when the awaited event
    * already exists, closing the race where it arrives before the run is parked.
    */
-  const waitStep = (key: string, opts: WaitForEventOptions, resultEventId?: string) =>
+  const waitStep = (key: string, opts: WaitForEventOptions, resultEventId?: string, tracked = false) =>
     Effect.gen(function* () {
       const onTimeout = opts.onTimeout ?? "null"
 
       const existing = yield* storage.getStep(runId, key)
+      if (!tracked) yield* track(key)
 
       // Already resolved (by a matching event or a memoised timeout)
       if (Option.isSome(existing) && existing.value.status === "completed") {
@@ -283,9 +295,11 @@ export const makeStepContext = (runId: string, storage: Storage, deps: StepConte
       Effect.gen(function* () {
         // Assign keys in declaration order before anything runs, so they are deterministic
         const entries = Object.entries(steps).map(([name, fn]) => ({ name, key: getIndexedName(name), fn }))
+        // Journal the group in declaration order too: concurrent lookups would record it racily
+        for (const e of entries) yield* track(e.key)
         const outcomes = yield* Effect.forEach(
           entries,
-          (e) => Effect.either(attemptStep(e.key, e.fn as () => unknown, opts)),
+          (e) => Effect.either(attemptStep(e.key, e.fn as () => unknown, opts, true)),
           { concurrency: "unbounded" },
         )
 
@@ -323,6 +337,7 @@ export const makeStepContext = (runId: string, storage: Storage, deps: StepConte
         const indexedName = getIndexedName(name)
 
         const existing = yield* storage.getStep(runId, indexedName)
+        yield* track(indexedName)
 
         // Already completed — return void and continue handler
         if (Option.isSome(existing) && existing.value.status === "completed") {
@@ -368,6 +383,8 @@ export const makeStepContext = (runId: string, storage: Storage, deps: StepConte
         const fail = (cause: unknown) => Effect.fail(new StepError({ stepName: key, cause, attempt: 1 }))
 
         const existing = yield* storage.getStep(runId, key)
+        // Before a child run can be created for a step that is not this run's recorded one
+        yield* track(key)
 
         if (Option.isNone(existing)) {
           // First execution: start the child run, unless a crashed earlier attempt already did
@@ -397,6 +414,8 @@ export const makeStepContext = (runId: string, storage: Storage, deps: StepConte
               waitingFor: Option.none(),
               output: Option.none(),
               concurrency: Option.fromNullable(runConcurrencyFor(functionName, target.concurrency, event)),
+              handlerVersion: Option.fromNullable(target.version),
+              stepJournal: [],
             }
             yield* storage.saveEventWithRuns(event, [child])
           }
@@ -414,6 +433,7 @@ export const makeStepContext = (runId: string, storage: Storage, deps: StepConte
             onTimeout: "throw",
           },
           invokeResultEventId(child.id),
+          true,
         )
         const data = result?.data as InvokeResultData | undefined
         if (!data) return yield* fail(`step.invoke: no result for invoked run ${child.id}`)

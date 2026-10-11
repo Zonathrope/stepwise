@@ -16,6 +16,8 @@ export interface RunSummary {
   completedAt: string | null
   retryAfter: string | null
   error: string | null
+  /** The function's declared `version` when this run was created. */
+  handlerVersion: string | null
   /** Set while `status` is "waiting": the event the run is parked on (step.waitForEvent). */
   waitingFor: {
     event: string

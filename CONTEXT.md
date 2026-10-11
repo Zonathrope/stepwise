@@ -27,7 +27,13 @@ The process or loop that dequeues pending Runs and executes them by invoking the
 The delay before a failed Step is re-attempted. Configured per Step via `step.run(name, fn, { maxAttempts, backoff })`, where `backoff` is `immediate` (the default), `fixed`, `linear` or `exponential`, with optional `maxDelay` and jitter. While attempts remain the Run is parked as `"retrying"` with `retry_after` set to the next attempt time. Once a Step exhausts its `maxAttempts` (default 3), the Run is `failed`; it is only re-queued by an explicit retry (`POST /api/runs/:id/retry`).
 
 **Determinism constraint**
-A Function handler must execute the same Steps in the same order on every attempt of a Run. Step outputs are memoized by call order; if the handler branches differently on a retry, the wrong memoized output will be fed to the wrong Step. Not enforced in production; the Test runner detects violations.
+A Function handler must execute the same Steps in the same order on every attempt of a Run. Step outputs are memoized by call order; if the handler branches differently on a retry, the wrong memoized output will be fed to the wrong Step. Enforced at runtime by the **Step journal**, and checked in tests by the Test runner.
+
+**Step journal**
+The Step keys a Run has requested, in order, stored on the Run. Every replay is checked against it; a divergence (inserted, removed, renamed or reordered Steps before the Run's current position) fails the Run with `HandlerVersionMismatchError`, or only logs when the Function sets `onVersionMismatch: "warn"`. Appending Steps after the recorded sequence is allowed.
+
+**Handler version**
+An optional `version` string declared on a Function and stored on each Run at creation. A Run resumed under a different version is treated as a version mismatch before its handler runs. Used for changes the Step journal cannot detect.
 
 **Concurrency limit**
 `concurrency` on a Function caps how many of its Runs are executing (`"running"`) at once, across all workers. `concurrency: n` is one bucket for the whole Function; `{ limit, key: "data.userId" }` gives each distinct value of that event field its own bucket (missing values share one). The bucket is fixed on the Run when it is dispatched. Runs that are sleeping, waiting or retrying do not hold a slot.

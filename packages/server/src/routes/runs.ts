@@ -274,6 +274,7 @@ export const serializeRun = (run: RunRecord) => ({
   completedAt: Option.getOrNull(run.completedAt)?.toISOString() ?? null,
   retryAfter: Option.getOrNull(run.retryAfter)?.toISOString() ?? null,
   error: Option.getOrNull(run.error),
+  handlerVersion: Option.getOrNull(run.handlerVersion),
   output: Option.getOrNull(run.output),
   waitingFor: Option.match(run.waitingFor, {
     onNone: () => null,
