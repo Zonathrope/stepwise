@@ -3,8 +3,8 @@ import { Hono, type Context } from "hono"
 import { Cause, Effect, Layer, Option } from "effect"
 import {
   dispatchEvent,
-  isReservedEventName,
-  RESERVED_EVENT_PREFIX,
+  INTERNAL_EVENT_PREFIXES,
+  isInternalEventName,
   Storage,
   ValidationError,
   type EventPayload,
@@ -70,10 +70,10 @@ eventsRouter.post("/", async (c) => {
     return c.json({ error: "event name is required" }, 400)
   }
 
-  // stepwise/* events (run lifecycle) are emitted by the runtime only; accepting them from
-  // callers would let anyone forge "run completed" notifications.
-  if (isReservedEventName(body.name)) {
-    return c.json({ error: `event names starting with "${RESERVED_EVENT_PREFIX}" are reserved` }, 400)
+  // Runtime-emitted events (run lifecycle, step.invoke, cron) can't be sent by callers: that
+  // would forge "run completed" notifications or resume a parent waiting on an invoked run.
+  if (isInternalEventName(body.name)) {
+    return c.json({ error: `event names starting with ${INTERNAL_EVENT_PREFIXES.map((p) => `"${p}"`).join(", ")} are reserved` }, 400)
   }
 
   // Build event with caller-supplied id (for idempotency) or generate one

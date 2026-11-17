@@ -13,10 +13,20 @@ export const RUN_COMPLETED_EVENT = "stepwise/run.completed"
 export const RUN_FAILED_EVENT = "stepwise/run.failed"
 export const RUN_CANCELLED_EVENT = "stepwise/run.cancelled"
 
-/** Event names under this prefix are emitted by the runtime and rejected from `POST /api/events`. */
+/** Lifecycle event names start with this prefix. */
 export const RESERVED_EVENT_PREFIX = "stepwise/"
 
+/** True for lifecycle events (`stepwise/*`), the ones that must not re-emit lifecycle events. */
 export const isReservedEventName = (name: string) => name.startsWith(RESERVED_EVENT_PREFIX)
+
+/**
+ * Prefixes of every event name the runtime emits itself: lifecycle events, `invoke/<fn>` and
+ * `invoke/result` (step.invoke), `cron/<fn>` (cron ticks). `POST /api/events` rejects them: a
+ * forged `invoke/result` would resume a waiting parent with an arbitrary "child output".
+ */
+export const INTERNAL_EVENT_PREFIXES = [RESERVED_EVENT_PREFIX, "invoke/", "cron/"] as const
+
+export const isInternalEventName = (name: string) => INTERNAL_EVENT_PREFIXES.some((p) => name.startsWith(p))
 
 /** `event.data` of `stepwise/run.completed`. */
 export interface RunCompletedEventData {

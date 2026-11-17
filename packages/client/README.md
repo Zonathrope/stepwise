@@ -49,7 +49,7 @@ export const alertOnFailure = defineFunction<RunFailedEventData>({
 ```
 
 Runs of lifecycle listeners don't emit lifecycle events themselves, so a listener can't
-trigger itself. `stepwise/*` event names are reserved and can't be sent with `client.send`.
+trigger itself. `stepwise/*`, `invoke/*` and `cron/*` event names are reserved for the runtime and can't be sent with `client.send`.
 
 ## Authentication (end-to-end)
 

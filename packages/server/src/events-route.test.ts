@@ -37,6 +37,13 @@ test("POST /api/events rejects reserved stepwise/* event names", async () => {
   assert.match(body.error, /reserved/)
 })
 
+test("POST /api/events rejects forged invoke/result and cron/* events", async () => {
+  for (const name of ["invoke/result", "invoke/greet", "cron/nightly"]) {
+    const res = await post(makeApp(), { name, data: { childRunId: "x", status: "completed", output: "forged" } })
+    assert.equal(res.status, 400, name)
+  }
+})
+
 test("POST /api/events still accepts ordinary event names", async () => {
   const res = await post(makeApp(), { name: "user.created", data: { id: "u1" } })
   assert.equal(res.status, 201)
