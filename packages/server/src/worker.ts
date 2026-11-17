@@ -368,6 +368,16 @@ export class Worker {
     }
   }
 
+  private async notifyNewRuns(runIds: ReadonlyArray<string>): Promise<void> {
+    try {
+      await this.db.execute(sql`SELECT pg_notify('stepper_runs', '')`)
+    } catch (err) {
+      // Non-fatal: other workers find the runs on their next poll
+      console.warn("[worker] Failed to NOTIFY stepper_runs:", err)
+    }
+    for (const id of runIds) void notifyRunUpdate(this.db, id)
+  }
+
   private async executeOne(runId: string): Promise<void> {
     try {
       const result = await Effect.runPromiseExit(
@@ -378,6 +388,9 @@ export class Worker {
 
       if (result._tag === "Failure") {
         console.error(`[worker] executeRun failed for run ${runId}:`, result.cause)
+      } else if (result.value.dispatched.length > 0) {
+        // Lifecycle event runs (stepwise/run.*) may belong to functions only other workers have
+        await this.notifyNewRuns(result.value.dispatched.map((r) => r.runId))
       }
     } catch (err) {
       console.error(`[worker] Unexpected error executing run ${runId}:`, err)

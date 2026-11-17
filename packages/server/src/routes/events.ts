@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto"
 import { Hono, type Context } from "hono"
 import { Cause, Effect, Layer, Option } from "effect"
-import { dispatchEvent, Storage, ValidationError, type EventPayload } from "@integration-stepper/core"
+import {
+  dispatchEvent,
+  isReservedEventName,
+  RESERVED_EVENT_PREFIX,
+  Storage,
+  ValidationError,
+  type EventPayload,
+} from "@integration-stepper/core"
 import { sql } from "drizzle-orm"
 import type { ServerEnv } from "../types.js"
 import { serializeRun } from "./runs.js"
@@ -61,6 +68,12 @@ eventsRouter.post("/", async (c) => {
 
   if (!body.name || typeof body.name !== "string") {
     return c.json({ error: "event name is required" }, 400)
+  }
+
+  // stepwise/* events (run lifecycle) are emitted by the runtime only; accepting them from
+  // callers would let anyone forge "run completed" notifications.
+  if (isReservedEventName(body.name)) {
+    return c.json({ error: `event names starting with "${RESERVED_EVENT_PREFIX}" are reserved` }, 400)
   }
 
   // Build event with caller-supplied id (for idempotency) or generate one

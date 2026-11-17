@@ -25,6 +25,15 @@ export interface FailureContext<TData> {
   readonly error: unknown
 }
 
+/** Context passed to `onSuccess` when a run completes. */
+export interface SuccessContext<TData> {
+  readonly runId: string
+  readonly functionName: string
+  readonly event: EventPayload & { data: TData }
+  /** The handler's return value (null if it returned nothing), as stored on the run. */
+  readonly output: unknown
+}
+
 /** `event.data` for runs created by a cron trigger. */
 export interface CronEventData {
   readonly cron: string
@@ -64,6 +73,12 @@ interface StepperFunctionBase<TData, TError, TRequirements> {
    * not on cancellation). Errors it raises are logged and otherwise ignored.
    */
   readonly onFailure?: ((ctx: FailureContext<TData>) => Effect.Effect<unknown, unknown, TRequirements>) | undefined
+  /**
+   * Called once when a run of this function completes. Like `onFailure` it is a best-effort,
+   * in-process hook: it is not retried and errors it raises are logged and otherwise ignored.
+   * For notifications that must be retried, listen for `stepwise/run.completed` instead.
+   */
+  readonly onSuccess?: ((ctx: SuccessContext<TData>) => Effect.Effect<unknown, unknown, TRequirements>) | undefined
 }
 
 /**
@@ -92,17 +107,18 @@ export const defineFunction = <TData = unknown, TError = never, TRequirements = 
 }
 
 /**
- * Bake a function's requirements into its handler and onFailure, so it can be registered as a
+ * Bake a function's requirements into its handler, onFailure and onSuccess, so it can be registered as a
  * `StepperFunction<_, _, never>` and executed without leaking `R`.
  */
 export const provideFunctionLayer = <TData, TError, R>(
   fn: StepperFunction<TData, TError, R>,
   layer: Layer.Layer<R>,
 ): StepperFunction<TData, TError, never> => {
-  const { onFailure } = fn
+  const { onFailure, onSuccess } = fn
   return {
     ...fn,
     handler: (event, step) => fn.handler(event, step).pipe(Effect.provide(layer)),
     onFailure: onFailure && ((ctx) => onFailure(ctx).pipe(Effect.provide(layer))),
+    onSuccess: onSuccess && ((ctx) => onSuccess(ctx).pipe(Effect.provide(layer))),
   }
 }

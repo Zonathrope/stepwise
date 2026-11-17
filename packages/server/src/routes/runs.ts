@@ -1,7 +1,7 @@
 import { Hono, type Context } from "hono"
 import { sql } from "drizzle-orm"
 import { Effect, Layer, Option, Schema } from "effect"
-import { notifyInvoker, Storage, RunStatus } from "@integration-stepper/core"
+import { emitLifecycleEvent, notifyInvoker, Registry, Storage, RunStatus } from "@integration-stepper/core"
 import type { RunRecord, StepRecord } from "@integration-stepper/core"
 import type { ServerEnv } from "../types.js"
 import { notifyRunUpdate } from "../run-updates.js"
@@ -94,17 +94,25 @@ runsRouter.get("/:id", async (c) => {
 const cancelOne = (runId: string) =>
   Effect.gen(function* () {
     const storage = yield* Storage
+    const cancelledAt = new Date()
     // Single atomic conditional UPDATE: avoids the check-then-update race with workers.
-    const cancelled = yield* storage.transitionRun(runId, ["pending", "retrying", "waiting"], { status: "cancelled" })
+    const cancelled = yield* storage.transitionRun(runId, ["pending", "retrying", "waiting"], {
+      status: "cancelled",
+      completedAt: Option.some(cancelledAt),
+    })
     if (cancelled) {
-      // A run started by step.invoke: let the invoking run fail its step instead of waiting forever
       const run = yield* storage.getRun(runId)
       if (Option.isSome(run)) {
+        // A run started by step.invoke: let the invoking run fail its step instead of waiting forever
         yield* notifyInvoker(runId, run.value.eventId, run.value.functionName, {
           status: "cancelled",
           output: null,
           error: "cancelled",
         })
+        const event = yield* storage.getEvent(run.value.eventId)
+        if (Option.isSome(event)) {
+          yield* emitLifecycleEvent(run.value, event.value, { status: "cancelled" }, cancelledAt)
+        }
       }
     }
     return cancelled
@@ -156,7 +164,7 @@ runsRouter.post("/:id/cancel", async (c) => {
   })
 
   const result = await Effect.runPromiseExit(
-    program.pipe(Effect.provide(c.get("storageLayer"))),
+    program.pipe(Effect.provide(Layer.mergeAll(c.get("storageLayer"), c.get("registryLayer")))),
   )
 
   if (result._tag === "Failure") {
@@ -165,6 +173,8 @@ runsRouter.post("/:id/cancel", async (c) => {
 
   const outcome = result.value
   if (outcome.ok) {
+    // The cancel may have dispatched stepwise/run.cancelled (and resumed an invoking parent)
+    await notifyWorker(c)
     await notifyRunUpdate(c.get("db"), runId)
     return c.json({ ok: true }, 200)
   }
@@ -207,7 +217,7 @@ const BULK_PAGE = 200
 const bulkApply = async (
   c: Context<ServerEnv>,
   fromStatuses: ReadonlyArray<RunStatus>,
-  apply: (runId: string) => Effect.Effect<boolean, unknown, Storage>,
+  apply: (runId: string) => Effect.Effect<boolean, unknown, Storage | Registry>,
 ) => {
   let body: { filter?: { status?: string; functionName?: string } } = {}
   try {
@@ -248,7 +258,7 @@ const bulkApply = async (
   })
 
   const result = await Effect.runPromiseExit(
-    program.pipe(Effect.provide(c.get("storageLayer"))),
+    program.pipe(Effect.provide(Layer.mergeAll(c.get("storageLayer"), c.get("registryLayer")))),
   )
   if (result._tag === "Failure") {
     return c.json({ error: "Bulk operation failed" }, 500)
@@ -257,7 +267,11 @@ const bulkApply = async (
   return c.json({ affected: result.value }, 200)
 }
 
-runsRouter.post("/bulk-cancel", (c) => bulkApply(c, ["pending", "retrying", "waiting"], cancelOne))
+runsRouter.post("/bulk-cancel", async (c) => {
+  const res = await bulkApply(c, ["pending", "retrying", "waiting"], cancelOne)
+  if (res.status === 200) await notifyWorker(c)
+  return res
+})
 
 runsRouter.post("/bulk-retry", async (c) => {
   const res = await bulkApply(c, ["failed"], retryOne)
