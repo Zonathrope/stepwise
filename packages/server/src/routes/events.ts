@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto"
 import { Hono, type Context } from "hono"
 import { Cause, Effect, Layer, Option } from "effect"
-import { dispatchEvent, Storage, ValidationError, type EventPayload } from "@integration-stepper/core"
+import {
+  dispatchEvent,
+  INTERNAL_EVENT_PREFIXES,
+  isInternalEventName,
+  Storage,
+  ValidationError,
+  type EventPayload,
+} from "@integration-stepper/core"
 import { sql } from "drizzle-orm"
 import type { ServerEnv } from "../types.js"
 import { serializeRun } from "./runs.js"
@@ -61,6 +68,12 @@ eventsRouter.post("/", async (c) => {
 
   if (!body.name || typeof body.name !== "string") {
     return c.json({ error: "event name is required" }, 400)
+  }
+
+  // Runtime-emitted events (run lifecycle, step.invoke, cron) can't be sent by callers: that
+  // would forge "run completed" notifications or resume a parent waiting on an invoked run.
+  if (isInternalEventName(body.name)) {
+    return c.json({ error: `event names starting with ${INTERNAL_EVENT_PREFIXES.map((p) => `"${p}"`).join(", ")} are reserved` }, 400)
   }
 
   // Build event with caller-supplied id (for idempotency) or generate one

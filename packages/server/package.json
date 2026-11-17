@@ -17,7 +17,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/bin.ts",
-    "test": "tsx --test src/metrics.test.ts src/worker-heartbeat.test.ts",
+    "test": "tsx --test src/metrics.test.ts src/events-route.test.ts src/runs-cancel.test.ts src/worker-heartbeat.test.ts src/lifecycle.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
@@ -33,6 +33,7 @@
     "typescript": "^5.7.2",
     "@types/node": "^22.10.1",
     "tsx": "^4.19.2",
-    "drizzle-kit": "^0.30.1"
+    "drizzle-kit": "^0.30.1",
+    "@integration-stepper/client": "workspace:*"
   }
 }

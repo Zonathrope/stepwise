@@ -21,6 +21,15 @@ import {
   type ValidationIssue,
 } from "./errors.js"
 import { StepJournal } from "./journal.js"
+import { emitLifecycleEvent } from "./lifecycle.js"
+
+/** What one `executeRun` pass did. */
+export interface ExecuteRunResult {
+  /** The run's status after this pass, as written by it (`running` if a race left it untouched). */
+  readonly status: RunRecord["status"]
+  /** Runs created by lifecycle events this pass emitted; the caller should wake workers for them. */
+  readonly dispatched: ReadonlyArray<{ runId: string; functionName: string }>
+}
 
 const isStepperPark = (e: unknown): e is StepperPark =>
   e instanceof StepperPark ||
@@ -99,9 +108,11 @@ export const executeRun = (runId: string) =>
     // Persist newly recorded step keys along with whatever the outcome writes
     const journalPatch = journal.updated ? { stepJournal: journal.updated } : {}
 
+    let parkedStatus: RunRecord["status"] = "pending"
     if (outcome._tag === "parked") {
       const park = outcome.park
       if (park.reason === "sleep" || park.reason === "step-retry") {
+        parkedStatus = "retrying"
         yield* storage.updateRun(runId, {
           status: "retrying",
           retryAfter: Option.some(park.retryAfter!),
@@ -110,6 +121,7 @@ export const executeRun = (runId: string) =>
         })
       } else if (park.reason === "wait") {
         const waitingFor = park.waitingFor!
+        parkedStatus = "waiting"
         yield* storage.updateRun(runId, {
           status: "waiting",
           retryAfter: Option.fromNullable(waitingFor.timeoutAt),
@@ -132,36 +144,43 @@ export const executeRun = (runId: string) =>
         })
       }
     } else if (outcome._tag === "completed") {
-      yield* storage.updateRun(runId, {
+      const completedAt = new Date()
+      const output = outcome.output ?? null
+      // Conditional, like the failed branch: only the execution that moves the run out of
+      // "running" fires onSuccess and the lifecycle event, so each fires once per completion.
+      const completed = yield* storage.transitionRun(runId, ["running"], {
         status: "completed",
-        completedAt: Option.some(new Date()),
+        completedAt: Option.some(completedAt),
         waitingFor: Option.none(),
         ...journalPatch,
         output: Option.fromNullable(outcome.output),
       })
-      yield* notifyInvoker(run.id, run.eventId, fn.name, {
-        status: "completed",
-        output: outcome.output ?? null,
-        error: null,
-      })
+      if (!completed) return { status: "running", dispatched: [] } satisfies ExecuteRunResult
+      yield* notifyInvoker(run.id, run.eventId, fn.name, { status: "completed", output, error: null })
+      if (fn.onSuccess) {
+        yield* Effect.suspend(() => fn.onSuccess!({ runId, functionName: fn.name, event, output })).pipe(
+          Effect.catchAllCause((cause) =>
+            Effect.logError(`onSuccess handler for "${fn.name}" failed (run ${runId})`, cause),
+          ),
+        )
+      }
+      const dispatched = yield* emitLifecycleEvent(run, event, { status: "completed", output }, completedAt)
+      return { status: "completed", dispatched } satisfies ExecuteRunResult
     } else {
+      const completedAt = new Date()
+      const error = describeRunError(outcome.error)
       // Conditional transition: only the execution that actually moves the run to "failed"
       // (not one that lost a race with a cancel) invokes onFailure, so it fires once per failure.
       const failed = yield* storage.transitionRun(runId, ["running"], {
         status: "failed",
-        completedAt: Option.some(new Date()),
-        error: Option.some(describeRunError(outcome.error)),
+        completedAt: Option.some(completedAt),
+        error: Option.some(error),
         waitingFor: Option.none(),
         ...journalPatch,
       })
-      if (failed) {
-        yield* notifyInvoker(run.id, run.eventId, fn.name, {
-          status: "failed",
-          output: null,
-          error: describeRunError(outcome.error),
-        })
-      }
-      if (failed && fn.onFailure) {
+      if (!failed) return { status: "running", dispatched: [] } satisfies ExecuteRunResult
+      yield* notifyInvoker(run.id, run.eventId, fn.name, { status: "failed", output: null, error })
+      if (fn.onFailure) {
         yield* Effect.suspend(() =>
           fn.onFailure!({ runId, functionName: fn.name, event, error: outcome.error }),
         ).pipe(
@@ -170,7 +189,10 @@ export const executeRun = (runId: string) =>
           ),
         )
       }
+      const dispatched = yield* emitLifecycleEvent(run, event, { status: "failed", error }, completedAt)
+      return { status: "failed", dispatched } satisfies ExecuteRunResult
     }
+    return { status: parkedStatus, dispatched: [] } satisfies ExecuteRunResult
   })
 
 /**
